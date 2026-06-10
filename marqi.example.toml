@@ -1,0 +1,77 @@
+# Marqi configuration — copy to:
+#   ~/.config/marqi/config.toml                        (Linux)
+#   ~/Library/Application Support/marqi/config.toml    (macOS)
+#   %APPDATA%\marqi\config\config.toml                 (Windows)
+# Every field is optional; omitted ones use the defaults shown here.
+# Unknown keys and unrecognised values show a warning in the status bar.
+
+[editor]
+# Keybinding preset: "standard" (default), "vim", "nano", or "emacs".
+keybindings = "standard"
+# Line number gutter in hybrid editing mode: "off", "absolute", or "relative".
+line_numbers = "relative"
+# Preview-only symbols before rendered headings.
+heading_glyphs = true
+# How a single source newline renders in the preview: "space" (markdown reflow,
+# the default) or "break" (a visible line break, Obsidian-style).
+soft_break = "space"
+# Save automatically ~2 seconds after the last edit. Applies only to buffers
+# that already have a filename (an unnamed buffer never pops a prompt at you).
+auto_save = false
+tab_width = 4
+scrolloff = 15
+
+[theme]
+# Built-in editor palette: "auto", "dark", or "light".
+# Auto checks MARQI_THEME, TERMINAL_THEME, THEME, and COLORFGBG, then falls
+# back to dark if the terminal does not provide a useful hint.
+variant = "auto"
+# Optional syntect theme override for fenced code blocks. Leave this unset to
+# use "base16-ocean.dark" for dark mode or "InspiredGitHub" for light mode.
+# syntax = "base16-ocean.dark"
+# syntax = "InspiredGitHub"
+
+# Per-element colour overrides (#rrggbb). Uncomment any line to override that
+# element; omitted ones keep the built-in dark/light value. Every configurable
+# colour is listed below with its default (dark) value as the example.
+# [theme.markdown]
+#
+# --- editor chrome ---
+# background     = "#262626"   # editor background
+# active_line    = "#303030"   # background of the line the cursor is on
+# text           = "#e4e4e4"   # body text
+# gutter         = "#7b8198"   # line-number gutter
+# gutter_current = "#e6e6f0"   # current line's number
+# status         = "#303030"   # status bar background
+# status_fg      = "#ffffff"   # status bar text
+# help_bg        = "#262626"   # help overlay background
+# selection      = "#334a6b"   # selected-text background
+#
+# --- headings (heading1 is the most prominent) ---
+# heading1       = "#7aa2f7"
+# heading2       = "#bb9af7"
+# heading3       = "#7dcfff"
+# heading4       = "#9ece6a"
+# heading5       = "#e0af68"
+# heading6       = "#f7768e"
+#
+# --- inline & block elements ---
+# marker         = "#6c7086"   # dimmed markdown punctuation in raw/active blocks
+# link           = "#7dcfff"
+# code           = "#9ece6a"   # inline `code` text
+# code_bg        = "#303030"   # inline `code` background
+# quote          = "#9a9ab0"   # block-quote text
+# quote_bar      = "#6272a4"   # block-quote bar
+# list           = "#7dcfff"   # list bullets / markers
+# task_done      = "#9ece6a"   # checked task box
+# task_todo      = "#6c6c80"   # unchecked task box
+# rule           = "#6272a4"   # thematic break (---)
+# table_header   = "#e4e4e4"
+# table_border   = "#6272a4"
+# html           = "#6c6c80"   # raw HTML
+#
+# --- highlighted keywords (TODO, NOTE, WARNING, ERROR, …) ---
+# keyword_note   = "#7dcfff"   # TODO, NOTE
+# keyword_warn   = "#e0af68"   # WARN, WARNING
+# keyword_error  = "#f7768e"   # ERROR, FIXME
+# keyword_misc   = "#ffb86c"   # IMPORTANT, HACK
