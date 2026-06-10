@@ -1,52 +1,62 @@
-# Marqi
+# Marqi [![CI](https://github.com/i-naji/marqi/actions/workflows/ci.yml/badge.svg)](https://github.com/i-naji/marqi/actions/workflows/ci.yml) [![Release](https://img.shields.io/github/v/release/i-naji/marqi?sort=semver)](https://github.com/i-naji/marqi/releases) [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 
-[![CI](https://github.com/i-naji/marqi/actions/workflows/ci.yml/badge.svg)](https://github.com/i-naji/marqi/actions/workflows/ci.yml)
-[![Release](https://img.shields.io/github/v/release/i-naji/marqi?sort=semver)](https://github.com/i-naji/marqi/releases)
-[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+<img src="https://vhs.charm.sh/vhs-44euONSCrs1dAy6AmgbX6l.gif" alt="Made with VHS">
 
-**Marqi** is a Markdown editor for the terminal with a true live preview: the
-document stays rendered while you type, and only the part you are editing
-shows its source. No split panes, no browser.
+> **The terminal Markdown editor with true live preview.**
+>
+> **No split panes. No browser. Just write.**
 
-- **Live preview, in place** — GitHub Flavored Markdown with syntax-highlighted
-  code blocks, tables, task lists, and footnotes.
-- **Your keybindings** — Standard, Vim, Nano, or Emacs presets, plus find &
-  replace and full mouse support.
-- **Safe by default** — atomic writes, optional auto-save, and a quit guard for
-  unsaved changes.
-- **Fast and portable** — a single small binary for Linux, macOS, and Windows.
+## One document. One cursor.
+Most Markdown editors make you switch between source and preview.
+
+Marqi doesn't.
+
+The document stays rendered while you write, and only the content under your cursor becomes editable.
+
+**The preview is the editor.**
+
+## Features
+
+- ⚡ True in-place live preview
+- 📝 GitHub Flavored Markdown
+- 🎨 Syntax-highlighted code blocks
+- 📋 Tables, task lists and footnotes
+- ⌨️ Standard, Vim, Nano and Emacs keybindings
+- 🖱️ Full mouse support
+- 💾 Atomic saves with optional autosave
+- 🎨 Configurable themes
+- 📦 Single portable binary
+- 🖥️ Linux, macOS and Windows
 
 ## Install
 
-Linux / macOS:
+### Linux / macOS
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/i-naji/marqi/main/install.sh | sh
+curl -fsSL https://raw.githubusercontent.com/i-Naji/Marqi/main/install.sh | sh
 ```
 
-Windows (PowerShell):
+### Windows (PowerShell)
 
 ```powershell
-irm https://raw.githubusercontent.com/i-naji/marqi/main/install.ps1 | iex
+irm https://raw.githubusercontent.com/i-Naji/Marqi/main/install.ps1 | iex
 ```
 
-Both install the [latest release](https://github.com/i-naji/marqi/releases/latest)
-and add it to your `PATH`. Or build from source:
+### From source
 
 ```sh
-cargo install --git https://github.com/i-naji/marqi
+cargo install --git https://github.com/i-Naji/Marqi
 ```
 
-## Usage
+## Quick Start
 
 ```sh
-marqi notes.md          # edit a file
-curl -s URL | marqi     # edit Markdown piped from stdin
-marqi -r notes.md       # render to stdout
+marqi README.md      # Edit a Markdown file
+marqi -r README.md   # Render to stdout
+marqi --help         # Show all commands and options
 ```
 
-Press `^G` inside the editor for the full keybinding reference, or run
-`marqi --help` for the CLI options.
+Press `Ctrl+G` inside Marqi to view the complete keybinding reference.
 
 ## Configuration
 
@@ -64,18 +74,12 @@ auto_save = false          # save ~2s after you stop typing
 variant = "auto"           # "auto" | "dark" | "light"
 ```
 
-See [`marqi.example.toml`](marqi.example.toml) for every option, including the
-full colour palette.
+See [`marqi.example.toml`](marqi.example.toml) for all available options.
 
-## Development
+## Documentation
 
-```sh
-cargo test && cargo clippy --all-targets --all-features -- -D warnings
-```
-
-See [`ARCHITECTURE.md`](ARCHITECTURE.md) for the rendering model and
-[`CHANGELOG.md`](CHANGELOG.md) for history. Releases are published by pushing a
-`v*` tag.
+* [`ARCHITECTURE.md`](ARCHITECTURE.md)
+* [`CHANGELOG.md`](CHANGELOG.md)
 
 ## License
 
