@@ -91,11 +91,17 @@ impl Config {
         Self::load_from_path(&path)
     }
 
-    /// Load `config.toml` from an explicit config directory. Unlike the
-    /// implicit platform path, a missing file here warns: the user asked for
-    /// this directory, so silently using defaults would hide a typo'd `-c`.
-    pub fn load_from_dir_with_warning(dir: impl AsRef<Path>) -> (Self, Option<String>) {
-        let path = dir.as_ref().join("config.toml");
+    /// Load config from an explicit `-c` argument: either a TOML file or a
+    /// directory containing `config.toml`. Unlike the implicit platform path,
+    /// a missing file here warns: the user asked for this path, so silently
+    /// using defaults would hide a typo'd `-c`.
+    pub fn load_from_arg_with_warning(arg: impl AsRef<Path>) -> (Self, Option<String>) {
+        let arg = arg.as_ref();
+        let path = if arg.is_dir() {
+            arg.join("config.toml")
+        } else {
+            arg.to_path_buf()
+        };
         if !path.exists() {
             return (
                 Self::default(),
@@ -225,7 +231,7 @@ mod tests {
         dir.push(format!("marqi_no_config_dir_{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         std::fs::remove_file(dir.join("config.toml")).ok();
-        let (_, warning) = Config::load_from_dir_with_warning(&dir);
+        let (_, warning) = Config::load_from_arg_with_warning(&dir);
         assert!(warning.is_some(), "-c with no config.toml must warn");
         std::fs::remove_dir(&dir).ok();
     }
@@ -241,11 +247,31 @@ mod tests {
         )
         .unwrap();
 
-        let (cfg, warning) = Config::load_from_dir_with_warning(&dir);
+        let (cfg, warning) = Config::load_from_arg_with_warning(&dir);
 
         assert!(warning.is_none());
         assert_eq!(cfg.editor.keybindings, "emacs");
         std::fs::remove_file(dir.join("config.toml")).ok();
         std::fs::remove_dir(&dir).ok();
+    }
+
+    #[test]
+    fn explicit_config_file_loads_directly() {
+        let path = temp_path("direct_file");
+        std::fs::write(&path, "[editor]\nline_numbers = \"relative\"\n").unwrap();
+
+        let (cfg, warning) = Config::load_from_arg_with_warning(&path);
+
+        assert!(warning.is_none());
+        assert_eq!(cfg.editor.line_numbers, "relative");
+        std::fs::remove_file(&path).ok();
+    }
+
+    #[test]
+    fn explicit_missing_path_warns() {
+        let path = temp_path("no_such");
+        std::fs::remove_file(&path).ok();
+        let (_, warning) = Config::load_from_arg_with_warning(&path);
+        assert!(warning.is_some(), "-c with a missing path must warn");
     }
 }

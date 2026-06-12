@@ -41,7 +41,7 @@ USAGE:
 
 OPTIONS:
     -r, --render              Render instead of opening the editor
-    -c, --config DIR          Load DIR/config.toml
+    -c, --config PATH         Load a config.toml (or DIR containing one)
     --                        Treat every following argument as a filename
     -h, --help                Show this help
     -V, --version             Show version
@@ -65,14 +65,14 @@ fn main() -> Result<()> {
             println!("marqi {}", env!("CARGO_PKG_VERSION"));
             return Ok(());
         }
-        Action::Render(path) => return render_to_stdout(&path, cli.config_dir.as_deref()),
-        Action::Edit(path) => run_editor(path, cli.config_dir)?,
+        Action::Render(path) => return render_to_stdout(&path, cli.config_path.as_deref()),
+        Action::Edit(path) => run_editor(path, cli.config_path)?,
     }
 
     Ok(())
 }
 
-fn run_editor(path: Option<String>, config_dir: Option<PathBuf>) -> Result<()> {
+fn run_editor(path: Option<String>, config_path: Option<PathBuf>) -> Result<()> {
     // The TUI draws to stdout; with stdout redirected the user would see a
     // frozen terminal stuck in raw mode while frames fill the file.
     if !std::io::stdout().is_terminal() {
@@ -91,7 +91,7 @@ fn run_editor(path: Option<String>, config_dir: Option<PathBuf>) -> Result<()> {
         }
     };
 
-    let (config, config_warning) = load_config(config_dir.as_deref());
+    let (config, config_warning) = load_config(config_path.as_deref());
     let mut app = App::with_config(buffer, &config);
     if let Some(warning) = config_warning {
         app.status = Some(warning);
@@ -106,11 +106,11 @@ fn run_editor(path: Option<String>, config_dir: Option<PathBuf>) -> Result<()> {
 }
 
 /// Render a file's markdown preview to stdout as plain text (no TTY needed).
-fn render_to_stdout(path: &str, config_dir: Option<&std::path::Path>) -> Result<()> {
+fn render_to_stdout(path: &str, config_path: Option<&std::path::Path>) -> Result<()> {
     use markdown::{CodeHighlighter, MarkdownTheme, render_preview};
 
     let source = std::fs::read_to_string(path)?;
-    let (cfg, warning) = load_config(config_dir);
+    let (cfg, warning) = load_config(config_path);
     if let Some(warning) = warning {
         eprintln!("{warning}");
     }
@@ -134,16 +134,16 @@ fn render_to_stdout(path: &str, config_dir: Option<&std::path::Path>) -> Result<
     Ok(())
 }
 
-fn load_config(config_dir: Option<&std::path::Path>) -> (config::Config, Option<String>) {
-    match config_dir {
-        Some(dir) => config::Config::load_from_dir_with_warning(dir),
+fn load_config(config_path: Option<&std::path::Path>) -> (config::Config, Option<String>) {
+    match config_path {
+        Some(arg) => config::Config::load_from_arg_with_warning(arg),
         None => config::Config::load_with_warning(),
     }
 }
 
 struct Cli {
     action: Action,
-    config_dir: Option<PathBuf>,
+    config_path: Option<PathBuf>,
 }
 
 enum Action {
@@ -156,7 +156,7 @@ enum Action {
 impl Cli {
     fn parse(args: impl IntoIterator<Item = String>) -> Result<Self> {
         let mut args = args.into_iter();
-        let mut config_dir = None;
+        let mut config_path = None;
         let mut render = false;
         let mut file = None;
 
@@ -172,22 +172,22 @@ impl Cli {
                 "-h" | "--help" => {
                     return Ok(Self {
                         action: Action::Help,
-                        config_dir,
+                        config_path,
                     });
                 }
                 "-V" | "--version" => {
                     return Ok(Self {
                         action: Action::Version,
-                        config_dir,
+                        config_path,
                     });
                 }
                 "-r" | "--render" => render = true,
                 "-c" | "--config" => {
-                    let dir = args
+                    let path = args
                         .next()
-                        .filter(|dir| !dir.starts_with('-'))
-                        .context("usage: marqi -c <config-dir> [FILE]")?;
-                    config_dir = Some(PathBuf::from(dir));
+                        .filter(|path| !path.starts_with('-'))
+                        .context("usage: marqi -c <config.toml or dir> [FILE]")?;
+                    config_path = Some(PathBuf::from(path));
                 }
                 // Everything after `--` is a filename, even if it looks like a flag.
                 "--" => {
@@ -206,7 +206,7 @@ impl Cli {
             Action::Edit(file)
         };
 
-        Ok(Self { action, config_dir })
+        Ok(Self { action, config_path })
     }
 }
 
@@ -255,9 +255,9 @@ mod tests {
     }
 
     #[test]
-    fn parses_render_alias_and_config_dir() {
+    fn parses_render_alias_and_config_path() {
         let cli = parse(&["-c", "cfg", "-r", "doc.md"]);
-        assert_eq!(cli.config_dir, Some(PathBuf::from("cfg")));
+        assert_eq!(cli.config_path, Some(PathBuf::from("cfg")));
         match cli.action {
             Action::Render(path) => assert_eq!(path, "doc.md"),
             _ => panic!("expected render action"),
@@ -267,7 +267,7 @@ mod tests {
     #[test]
     fn parses_render_file_after_later_options() {
         let cli = parse(&["-r", "-c", "cfg", "doc.md"]);
-        assert_eq!(cli.config_dir, Some(PathBuf::from("cfg")));
+        assert_eq!(cli.config_path, Some(PathBuf::from("cfg")));
         match cli.action {
             Action::Render(path) => assert_eq!(path, "doc.md"),
             _ => panic!("expected render action"),
@@ -275,9 +275,9 @@ mod tests {
     }
 
     #[test]
-    fn parses_edit_file_with_config_dir() {
+    fn parses_edit_file_with_config_path() {
         let cli = parse(&["--config", "cfg", "doc.md"]);
-        assert_eq!(cli.config_dir, Some(PathBuf::from("cfg")));
+        assert_eq!(cli.config_path, Some(PathBuf::from("cfg")));
         match cli.action {
             Action::Edit(path) => assert_eq!(path.as_deref(), Some("doc.md")),
             _ => panic!("expected edit action"),

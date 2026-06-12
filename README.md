@@ -62,7 +62,9 @@ Press `Ctrl+G` inside Marqi to view the complete keybinding reference.
 
 Optional. Marqi reads `config.toml` from the platform config directory
 (`~/.config/marqi/` on Linux, `~/Library/Application Support/marqi/` on macOS,
-`%APPDATA%\marqi\config\` on Windows), or from a directory passed with `-c`.
+`%APPDATA%\marqi\config\` on Windows), or from a path passed with `-c` — either
+a TOML file directly (`marqi -c my-config.toml`) or a directory containing
+`config.toml`.
 
 ```toml
 [editor]
