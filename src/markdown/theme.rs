@@ -329,6 +329,16 @@ fn detect_terminal_variant() -> ThemeVariant {
             return variant;
         }
     }
+    // Ask the terminal for its actual background (OSC 11) before falling back
+    // to the COLORFGBG hint, which is rarely set and goes stale when the user
+    // switches terminal themes.
+    if let Some((r, g, b)) = crate::color::terminal_background() {
+        return if crate::color::rgb_is_light(r, g, b) {
+            ThemeVariant::Light
+        } else {
+            ThemeVariant::Dark
+        };
+    }
     env::var("COLORFGBG")
         .ok()
         .and_then(|value| variant_from_colorfgbg(&value))

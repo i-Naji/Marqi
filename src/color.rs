@@ -81,9 +81,41 @@ pub fn rgb_to_ansi256(r: u8, g: u8, b: u8) -> u8 {
     }
 }
 
+/// Whether an RGB background reads as light (ITU-R BT.709 luma above 50%).
+pub fn rgb_is_light(r: u8, g: u8, b: u8) -> bool {
+    // Coefficients ×10000; threshold is 127.5 × 10000.
+    2126 * r as u32 + 7152 * g as u32 + 722 * b as u32 > 1_275_000
+}
+
+/// The terminal's actual background colour, asked via the OSC 11 query —
+/// the only signal that tracks what the user really sees (`COLORFGBG` is
+/// rarely set and goes stale when the terminal theme changes). Queried once
+/// and cached. `None` when stdout isn't a terminal or the terminal doesn't
+/// answer. terminal-colorsaurus talks to `/dev/tty` directly (so piped stdin
+/// still works) and DA1-fences the query, so unsupported terminals answer
+/// immediately instead of timing out.
+pub fn terminal_background() -> Option<(u8, u8, u8)> {
+    static CACHE: OnceLock<Option<(u8, u8, u8)>> = OnceLock::new();
+    *CACHE.get_or_init(query_background)
+}
+
+fn query_background() -> Option<(u8, u8, u8)> {
+    use std::io::IsTerminal;
+
+    // The query styles output drawn to stdout; with stdout piped (renders to a
+    // file, tests) the terminal's background is irrelevant.
+    if !std::io::stdout().is_terminal() {
+        return None;
+    }
+    let color =
+        terminal_colorsaurus::background_color(terminal_colorsaurus::QueryOptions::default())
+            .ok()?;
+    Some(color.scale_to_8bit())
+}
+
 #[cfg(test)]
 mod tests {
-    use super::rgb_to_ansi256;
+    use super::{rgb_is_light, rgb_to_ansi256};
 
     #[test]
     fn maps_pure_colors_into_the_cube() {
@@ -106,5 +138,14 @@ mod tests {
         // snap to a saturated teal cube vertex.
         let idx = rgb_to_ansi256(0x2b, 0x30, 0x3b);
         assert!((232..=255).contains(&idx), "expected gray ramp, got {idx}");
+    }
+
+    #[test]
+    fn luma_splits_light_and_dark_backgrounds() {
+        assert!(rgb_is_light(0xff, 0xff, 0xff));
+        assert!(rgb_is_light(0xfd, 0xf6, 0xe3)); // solarized light
+        assert!(!rgb_is_light(0x1e, 0x1e, 0x1e)); // vscode dark
+        assert!(!rgb_is_light(0x28, 0x2a, 0x36)); // dracula
+        assert!(!rgb_is_light(0x00, 0x00, 0x00));
     }
 }
