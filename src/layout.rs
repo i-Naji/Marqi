@@ -12,17 +12,31 @@ use unicode_segmentation::UnicodeSegmentation;
 use unicode_width::UnicodeWidthStr;
 
 /// One grapheme cluster as placed on screen.
+///
+/// Deliberately holds no text: the renderer slices the source line at
+/// `byte..byte + len` and expands a tab to `width` spaces. Keeping the struct
+/// at 12 heap-free bytes is what lets a full-document layout stay cheap.
 pub struct Cell {
     /// Byte offset of this cluster's first byte, relative to its logical line.
-    pub byte: usize,
+    pub byte: u32,
     /// Byte length of the cluster (for grapheme-wise deletion/movement).
-    pub len: usize,
+    pub len: u16,
     /// Display width in columns: 0, 1, or 2 (wider clusters are possible but rare).
     pub width: u16,
     /// Starting display column on this row.
     pub col: u16,
-    /// What to actually draw (tabs become spaces; everything else is verbatim).
-    pub display: String,
+}
+
+impl Cell {
+    /// Line-relative byte offset of this cluster's first byte.
+    pub fn byte(&self) -> usize {
+        self.byte as usize
+    }
+
+    /// Line-relative byte offset one past this cluster's last byte.
+    pub fn byte_end(&self) -> usize {
+        self.byte as usize + self.len as usize
+    }
 }
 
 /// One visual row. Owns the byte half-open range `[byte_start, byte_end)`.
@@ -185,7 +199,7 @@ impl Layout {
         while let Some(dl) = self.lines.get(r) {
             if rel >= dl.byte_start && rel < dl.byte_end {
                 for cell in &dl.cells {
-                    if rel < cell.byte + cell.len {
+                    if rel < cell.byte_end() {
                         return (r, cell.col);
                     }
                 }
@@ -228,17 +242,17 @@ impl Layout {
             // soft-wrapped row (so we stay on this visual row).
             return line_start
                 + if dl.soft_wrapped {
-                    dl.cells.last().map_or(dl.byte_end, |c| c.byte)
+                    dl.cells.last().map_or(dl.byte_end, |c| c.byte())
                 } else {
                     dl.byte_end
                 };
         }
         for cell in &dl.cells {
             if target_col < cell.col + cell.width {
-                return line_start + cell.byte;
+                return line_start + cell.byte();
             }
         }
-        line_start + dl.cells.last().map_or(dl.byte_start, |c| c.byte)
+        line_start + dl.cells.last().map_or(dl.byte_start, |c| c.byte())
     }
 
     fn rebuild_all(&mut self, rope: &Rope) {
@@ -298,17 +312,15 @@ fn build_line(rope: &Rope, line: usize, wrap_width: usize, tab_width: usize) -> 
             col = 0;
         }
         let width = grapheme_width(g, col, tab);
-        let display = if g == "\t" {
-            " ".repeat(width as usize)
-        } else {
-            g.to_string()
-        };
+        debug_assert!(
+            off <= u32::MAX as usize && g.len() <= u16::MAX as usize,
+            "logical line or grapheme exceeds Cell's compact field range"
+        );
         row.cells.push(Cell {
-            byte: off,
-            len: g.len(),
+            byte: off as u32,
+            len: g.len() as u16,
             width,
             col,
-            display,
         });
         col += width;
     }
@@ -355,7 +367,8 @@ mod tests {
         let layout = Layout::build(&rope, 80, 4);
         // Tab fills columns 0..4, so x sits at col 4.
         assert_eq!(layout.byte_to_pos("\t".len()), (0, 4));
-        assert_eq!(layout.rows()[0].cells[0].display, "    ");
+        let cell = &layout.rows()[0].cells[0];
+        assert_eq!((cell.byte, cell.len, cell.width, cell.col), (0, 1, 4, 0));
     }
 
     #[test]

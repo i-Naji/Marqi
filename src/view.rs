@@ -376,6 +376,7 @@ pub fn build_raw(
     for row in layout.rows() {
         line_numbers.push(Some(row.line + 1));
         lines.push(raw_row(
+            rope,
             row,
             layout.line_start(row.line),
             Some(&styles),
@@ -595,6 +596,7 @@ fn push_raw_gap(
     for row in &layout.rows()[first_row..end_row] {
         line_numbers.push(Some(row.line + 1));
         lines.push(raw_row(
+            rope,
             row,
             layout.line_start(row.line),
             table.as_ref(),
@@ -835,6 +837,7 @@ fn raw_lines(
         .iter()
         .map(|row| {
             raw_row(
+                rope,
                 row,
                 layout.line_start(row.line),
                 Some(&table),
@@ -865,7 +868,11 @@ fn highlight_block(lines: &mut [Line<'static>], color: Color) {
 
 /// Render one raw display row: each cell styled by its byte (active block) or
 /// with the default style (blank gap), with selected cells given a background.
+/// Cell text comes from slicing the source line (cells store no text); a tab
+/// renders as its display width in spaces.
+#[allow(clippy::too_many_arguments)]
 fn raw_row(
+    rope: &Rope,
     row: &DisplayLine,
     line_start: usize,
     styles: Option<&(usize, Vec<Style>)>,
@@ -874,9 +881,10 @@ fn raw_row(
     active_bg: Color,
     sel: Option<((usize, usize), Color)>,
 ) -> Line<'static> {
+    let text = rope.line(row.line).to_string();
     let mut items: Vec<(String, Style)> = Vec::with_capacity(row.cells.len());
     for cell in &row.cells {
-        let byte = line_start + cell.byte;
+        let byte = line_start + cell.byte();
         let mut style = match styles {
             Some((start, table)) => table.get(byte - start).copied().unwrap_or(default),
             None => default,
@@ -889,7 +897,13 @@ fn raw_row(
         {
             style = style.bg(color);
         }
-        items.push((cell.display.clone(), style));
+        let cluster = &text[cell.byte()..cell.byte_end()];
+        let display = if cluster == "\t" {
+            " ".repeat(cell.width as usize)
+        } else {
+            cluster.to_string()
+        };
+        items.push((display, style));
     }
     merge_spans(items.into_iter())
 }
