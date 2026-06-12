@@ -50,6 +50,11 @@ const RENDER_CACHE_LIMIT_BYTES: usize = 4 * 1024 * 1024;
 #[derive(Default)]
 pub struct ViewCache {
     blocks: Vec<SourceBlock>,
+    /// The document's link reference definitions (e.g. `[docs]: url`), one per
+    /// line. Appended to every block's isolated re-parse so `[text][ref]`
+    /// links resolve across blocks; pure definitions render nothing, so the
+    /// appendix never adds rows.
+    ref_defs: String,
     version: Option<u64>,
     rendered: HashMap<u64, CachedBlock>,
     rendered_bytes: usize,
@@ -86,7 +91,7 @@ impl ViewCache {
         if self.version == Some(version) {
             return;
         }
-        self.blocks = blocks_from_ast(rope);
+        (self.blocks, self.ref_defs) = blocks_from_ast(rope);
         self.version = Some(version);
     }
 
@@ -98,7 +103,8 @@ impl ViewCache {
         theme: &MarkdownTheme,
         highlighter: &CodeHighlighter,
     ) -> (Vec<Line<'static>>, Vec<Option<usize>>) {
-        let source = source_slice(rope, block.start_byte, block.end_byte);
+        let mut source = source_slice(rope, block.start_byte, block.end_byte);
+        append_ref_defs(&mut source, &self.ref_defs);
         let key = block_cache_key(&source, width, theme.heading_glyphs, theme.hard_breaks);
         if let Some(cached) = self.rendered.get(&key) {
             self.stats.block_hits += 1;
@@ -138,16 +144,75 @@ pub fn render_preview_cached(
 ) -> Vec<Line<'static>> {
     cache.ensure_blocks(rope, version);
     let width = width.max(1);
+    let total = rope.len_lines();
     let mut out = Vec::new();
     let blocks = cache.blocks.clone();
+    let mut next_line = 0usize;
     for block in &blocks {
+        push_gap_defs(rope, next_line, block.start_line, theme, &mut out);
         if !out.is_empty() {
             out.push(Line::default());
         }
-        out.extend(cache.cached_block(rope, block, width, theme, highlighter).0);
+        let (block_lines, _) = cache.cached_block(rope, block, width, theme, highlighter);
+        if renders_blank(&block_lines) {
+            // The isolated re-parse consumed the whole block (e.g. a footnote
+            // definition whose reference lives in another block): show its
+            // tokenized source rather than a blank hole.
+            let source = source_slice(rope, block.start_byte, block.end_byte);
+            out.extend(tokenized_source_lines(&source, theme));
+        } else {
+            out.extend(block_lines);
+        }
+        next_line = block.end_line + 1;
     }
+    push_gap_defs(rope, next_line, total, theme, &mut out);
     if out.is_empty() {
         out.push(Line::default());
+    }
+    out
+}
+
+/// Append a gap's non-blank content to the read preview. Gap lines are exactly
+/// the link reference definitions (everything else is owned by a block), and
+/// hiding them entirely — as a website renderer would — reads as data loss in
+/// an editor. Leading/trailing blank lines collapse into the usual separator;
+/// interior structure is kept.
+fn push_gap_defs(
+    rope: &Rope,
+    from: usize,
+    to_exclusive: usize,
+    theme: &MarkdownTheme,
+    out: &mut Vec<Line<'static>>,
+) {
+    let lines: Vec<String> = (from..to_exclusive)
+        .map(|l| rope.line(l).to_string())
+        .collect();
+    let Some(first) = lines.iter().position(|l| !l.trim().is_empty()) else {
+        return;
+    };
+    let last = lines.iter().rposition(|l| !l.trim().is_empty()).unwrap();
+    if !out.is_empty() {
+        out.push(Line::default());
+    }
+    for text in &lines[first..=last] {
+        out.extend(tokenized_source_lines(text, theme));
+    }
+}
+
+/// Raw source styled by the markdown tokenizer — for read-mode rows that have
+/// no preview rendering (reference definitions, consumed blocks).
+fn tokenized_source_lines(source: &str, theme: &MarkdownTheme) -> Vec<Line<'static>> {
+    let styles = tokenizer::highlight(source, theme);
+    let mut out = Vec::new();
+    let mut offset = 0;
+    for line in source.split_inclusive('\n') {
+        let content = line.trim_end_matches(['\n', '\r']);
+        let row = content.char_indices().map(|(i, ch)| {
+            let style = styles.get(offset + i).copied().unwrap_or(theme.text);
+            (ch.to_string(), style)
+        });
+        out.push(merge_spans(row));
+        offset += line.len();
     }
     out
 }
@@ -184,6 +249,7 @@ pub fn build_cached(
 
     let mut line = 0;
     let blocks = cache.blocks.clone();
+    let ref_defs = cache.ref_defs.clone();
     for (idx, block) in blocks.iter().enumerate() {
         if line < block.start_line {
             push_raw_gap(
@@ -212,6 +278,7 @@ pub fn build_cached(
                 theme,
                 highlighter,
                 sel,
+                &ref_defs,
             );
             active_screen_row = lines.len() + active.hole_row;
             active_first_row = active.first_layout_row;
@@ -221,18 +288,38 @@ pub fn build_cached(
         } else {
             let (mut block_lines, sources) =
                 cache.cached_block(rope, block, width, theme, highlighter);
-            if let Some((range, color)) = sel
-                && intersects((block.start_byte, block.end_byte), range)
-            {
-                highlight_block(&mut block_lines, color);
+            if renders_blank(&block_lines) {
+                // The isolated re-parse consumed the whole block (e.g. a
+                // footnote definition whose reference lives in another block):
+                // show the raw source rows rather than a blank hole.
+                push_raw_gap(
+                    rope,
+                    layout,
+                    block.start_line,
+                    block.end_line,
+                    cursor_line,
+                    theme,
+                    sel,
+                    &mut lines,
+                    &mut line_numbers,
+                    &mut active_first_row,
+                    &mut active_screen_row,
+                    &mut active_lines,
+                );
+            } else {
+                if let Some((range, color)) = sel
+                    && intersects((block.start_byte, block.end_byte), range)
+                {
+                    highlight_block(&mut block_lines, color);
+                }
+                // Map block-relative (1-based) source lines to absolute ones.
+                line_numbers.extend(
+                    sources
+                        .into_iter()
+                        .map(|src| src.map(|rel| block.start_line + rel)),
+                );
+                lines.extend(block_lines);
             }
-            // Map block-relative (1-based) source lines to absolute ones.
-            line_numbers.extend(
-                sources
-                    .into_iter()
-                    .map(|src| src.map(|rel| block.start_line + rel)),
-            );
-            lines.extend(block_lines);
         }
         line = block.end_line + 1;
     }
@@ -330,8 +417,10 @@ fn render_active_cached(
     theme: &MarkdownTheme,
     highlighter: &CodeHighlighter,
     sel: Option<((usize, usize), Color)>,
+    ref_defs: &str,
 ) -> ActiveCachedRender {
-    let source = source_slice(rope, block.start_byte, block.end_byte);
+    let mut source = source_slice(rope, block.start_byte, block.end_byte);
+    append_ref_defs(&mut source, ref_defs);
     let arena = Arena::new();
     let root = parse_document(&arena, &source, &gfm_options());
     let rel_cursor = cursor_line.saturating_sub(block.start_line);
@@ -491,12 +580,24 @@ fn push_raw_gap(
     let contains_cursor = (line..=end_line).contains(&cursor_line);
     let (first_row, end_row) = row_range(rope, layout, line, end_line, total);
     let screen_offset = lines.len();
+    // Tokenize the gap so its non-blank lines (link reference definitions)
+    // read as raw markdown rather than flat text. Most gaps are pure blank
+    // lines, which skip the tokenizer entirely.
+    let start_byte = rope.line_to_byte(line);
+    let end_byte = if end_line + 1 < total {
+        rope.line_to_byte(end_line + 1)
+    } else {
+        rope.len_bytes()
+    };
+    let gap_source = source_slice(rope, start_byte, end_byte);
+    let table = (!gap_source.trim().is_empty())
+        .then(|| (start_byte, tokenizer::highlight(&gap_source, theme)));
     for row in &layout.rows()[first_row..end_row] {
         line_numbers.push(Some(row.line + 1));
         lines.push(raw_row(
             row,
             layout.line_start(row.line),
-            None,
+            table.as_ref(),
             theme.text,
             Some(cursor_line),
             theme.active_line,
@@ -510,10 +611,10 @@ fn push_raw_gap(
     }
 }
 
-fn blocks_from_ast(rope: &Rope) -> Vec<SourceBlock> {
+fn blocks_from_ast(rope: &Rope) -> (Vec<SourceBlock>, String) {
     let total = rope.len_lines();
     if total == 0 {
-        return Vec::new();
+        return (Vec::new(), String::new());
     }
     // comrak's parse is the single source of truth for block boundaries, so the
     // hybrid view and read-mode preview agree and constructs like setext
@@ -559,7 +660,65 @@ fn blocks_from_ast(rope: &Rope) -> Vec<SourceBlock> {
             end_byte,
         });
     }
-    blocks
+    (blocks, ref_defs_from_gaps(rope, &owner))
+}
+
+/// Collect the document's link reference definitions, one per line.
+///
+/// Definitions never appear in the AST — comrak consumes them into its
+/// refmap — so their lines are exactly the non-blank *unowned* ones. A line is
+/// taken only if it alone re-parses to an empty document, the signature of a
+/// pure definition (a look-alike inside a paragraph or code block is owned and
+/// never reaches the check). Footnote definitions are skipped: appending one
+/// would make it render inside any block that references it.
+fn ref_defs_from_gaps(rope: &Rope, owner: &[Option<usize>]) -> String {
+    // comrak itself decides what qualifies. Footnotes are disabled for the
+    // probe so a `[^name]:` definition parses as a paragraph and is rejected —
+    // appending one would make it render inside any block referencing it.
+    let mut probe_options = gfm_options();
+    probe_options.extension.footnotes = false;
+    let mut out = String::new();
+    for (idx, owned) in owner.iter().enumerate() {
+        if owned.is_some() {
+            continue;
+        }
+        let line = rope.line(idx).to_string();
+        if line.trim().is_empty() {
+            continue;
+        }
+        let arena = Arena::new();
+        if parse_document(&arena, &line, &probe_options)
+            .children()
+            .next()
+            .is_none()
+        {
+            out.push_str(line.trim());
+            out.push('\n');
+        }
+    }
+    out
+}
+
+/// Append the document's reference definitions to a block slice about to be
+/// re-parsed, separated by a blank line so they cannot lazily continue a
+/// trailing paragraph.
+fn append_ref_defs(source: &mut String, ref_defs: &str) {
+    if ref_defs.is_empty() {
+        return;
+    }
+    if !source.ends_with('\n') {
+        source.push('\n');
+    }
+    source.push('\n');
+    source.push_str(ref_defs);
+}
+
+/// Whether every row is visually empty — the signature of a slice re-parse
+/// that consumed the whole block (e.g. an unreferenced footnote definition).
+fn renders_blank(lines: &[Line<'static>]) -> bool {
+    lines
+        .iter()
+        .all(|l| l.spans.iter().all(|s| s.content.trim().is_empty()))
 }
 
 fn source_slice(rope: &Rope, start: usize, end: usize) -> String {
@@ -995,6 +1154,146 @@ mod tests {
         assert!(
             labeled.iter().all(|l| *l <= rope.len_lines()),
             "labels must stay within the document: {labeled:?}"
+        );
+    }
+
+    #[test]
+    fn footnote_definition_shows_raw_instead_of_vanishing() {
+        // comrak drops a footnote definition whose reference lives in another
+        // block, so the isolated re-parse renders nothing; the hybrid view
+        // must fall back to the raw source rather than a blank row.
+        let src = "A footnote[^n].\n\n[^n]: the definition body\n";
+        let rope = Rope::from_str(src);
+        let layout = Layout::build(&rope, 60, 4);
+        let theme = MarkdownTheme::default();
+        let hl = CodeHighlighter::new(None);
+        let view = view_for(&rope, &layout, 0, None, 60, &theme, &hl);
+
+        let text: Vec<String> = view
+            .lines
+            .iter()
+            .map(|l| l.spans.iter().map(|s| s.content.as_ref()).collect())
+            .collect();
+        let def_row = text
+            .iter()
+            .position(|l| l.contains("[^n]: the definition body"))
+            .unwrap_or_else(|| panic!("definition must stay visible: {text:?}"));
+        assert_eq!(
+            view.line_numbers[def_row],
+            Some(3),
+            "the raw fallback keeps the exact line number"
+        );
+    }
+
+    #[test]
+    fn reference_links_resolve_across_blocks() {
+        // The `[docs]:` definition lives outside the paragraph's block; the
+        // appendix lets the isolated re-parse resolve it. Cursor sits on the
+        // definition line (a raw gap), so the paragraph renders as preview.
+        let src = "see [the docs][docs] here\n\n[docs]: https://example.com\n";
+        let rope = Rope::from_str(src);
+        let layout = Layout::build(&rope, 60, 4);
+        let theme = MarkdownTheme::default();
+        let hl = CodeHighlighter::new(None);
+        let cursor = src.find("[docs]:").unwrap();
+        let view = view_for(&rope, &layout, cursor, None, 60, &theme, &hl);
+
+        let text = view
+            .lines
+            .iter()
+            .map(|l| {
+                l.spans
+                    .iter()
+                    .map(|s| s.content.as_ref())
+                    .collect::<String>()
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(
+            text.contains("see the docs here"),
+            "the reference link should render resolved:\n{text}"
+        );
+        assert!(
+            !text.contains("[the docs][docs]"),
+            "the raw reference must not leak into the preview:\n{text}"
+        );
+    }
+
+    #[test]
+    fn read_preview_shows_reference_definitions() {
+        let src = "see [the docs][docs] here\n\n[docs]: https://example.com\n";
+        let rope = Rope::from_str(src);
+        let theme = MarkdownTheme::default();
+        let hl = CodeHighlighter::new(None);
+        let mut cache = ViewCache::default();
+        let text = render_preview_cached(&mut cache, &rope, 60, &theme, &hl, 0)
+            .iter()
+            .map(|l| {
+                l.spans
+                    .iter()
+                    .map(|s| s.content.as_ref())
+                    .collect::<String>()
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(
+            text.contains("[docs]: https://example.com"),
+            "the definition should stay visible in the read preview:\n{text}"
+        );
+        assert!(
+            text.contains("see the docs here"),
+            "and the link it defines should render resolved:\n{text}"
+        );
+    }
+
+    #[test]
+    fn raw_fallback_rows_are_tokenized_not_flat() {
+        // The footnote-definition fallback and gap lines must carry the raw
+        // tokenizer's styling (link-colored label), not flat text.
+        let src = "A footnote[^n].\n\n[^n]: the definition body\n";
+        let rope = Rope::from_str(src);
+        let layout = Layout::build(&rope, 60, 4);
+        let theme = MarkdownTheme::default();
+        let hl = CodeHighlighter::new(None);
+        let view = view_for(&rope, &layout, 0, None, 60, &theme, &hl);
+
+        let def_row = view
+            .lines
+            .iter()
+            .find(|l| {
+                l.spans
+                    .iter()
+                    .map(|s| s.content.as_ref())
+                    .collect::<String>()
+                    .contains("[^n]:")
+            })
+            .expect("definition row present");
+        assert!(
+            def_row.spans.iter().any(|s| s.style == theme.link),
+            "the [^n] label should use the link style: {def_row:?}"
+        );
+    }
+
+    #[test]
+    fn read_preview_keeps_footnote_definition_visible() {
+        let src = "A footnote[^n].\n\n[^n]: the definition body\n";
+        let rope = Rope::from_str(src);
+        let theme = MarkdownTheme::default();
+        let hl = CodeHighlighter::new(None);
+        let mut cache = ViewCache::default();
+        let text = render_preview_cached(&mut cache, &rope, 60, &theme, &hl, 0)
+            .iter()
+            .map(|l| {
+                l.spans
+                    .iter()
+                    .map(|s| s.content.as_ref())
+                    .collect::<String>()
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(
+            text.contains("[^n]: the definition body"),
+            "definition should fall back to source:\n{text}"
         );
     }
 

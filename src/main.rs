@@ -206,7 +206,10 @@ impl Cli {
             Action::Edit(file)
         };
 
-        Ok(Self { action, config_path })
+        Ok(Self {
+            action,
+            config_path,
+        })
     }
 }
 
