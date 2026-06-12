@@ -22,6 +22,10 @@ use crate::color::rgb;
 /// Drop the highlight cache once it grows past this many distinct code blocks.
 const CACHE_LIMIT: usize = 2048;
 
+/// A highlighted row and the 0-based literal line it begins (`None` for the
+/// continuation rows of a hard-wrapped line).
+type HighlightedRow = (Line<'static>, Option<usize>);
+
 pub struct CodeHighlighter {
     syntax_set: SyntaxSet,
     theme: Theme,
@@ -30,7 +34,7 @@ pub struct CodeHighlighter {
     /// the costly part of re-rendering, so unchanged code blocks are reused.
     /// The full key is stored (not a hash) so a collision can never serve
     /// another block's rendering; memory stays bounded by [`CACHE_LIMIT`].
-    cache: RefCell<HashMap<(String, String, usize), Vec<Line<'static>>>>,
+    cache: RefCell<HashMap<(String, String, usize), Vec<HighlightedRow>>>,
 }
 
 impl CodeHighlighter {
@@ -59,8 +63,10 @@ impl CodeHighlighter {
     }
 
     /// Highlight `code` (a fenced block's literal) for `lang`, producing styled
-    /// rows at most `width` columns wide. Results are memoised.
-    pub fn highlight(&self, lang: &str, code: &str, width: usize) -> Vec<Line<'static>> {
+    /// rows at most `width` columns wide. Each row carries the 0-based literal
+    /// line it begins; hard-wrapped continuation rows carry `None`. Results are
+    /// memoised.
+    pub fn highlight(&self, lang: &str, code: &str, width: usize) -> Vec<HighlightedRow> {
         let width = width.max(1);
 
         let key = (lang.to_string(), code.to_string(), width);
@@ -77,7 +83,7 @@ impl CodeHighlighter {
         lines
     }
 
-    fn highlight_uncached(&self, lang: &str, code: &str, width: usize) -> Vec<Line<'static>> {
+    fn highlight_uncached(&self, lang: &str, code: &str, width: usize) -> Vec<HighlightedRow> {
         let syntax = self
             .syntax_set
             .find_syntax_by_token(lang)
@@ -86,7 +92,7 @@ impl CodeHighlighter {
         let mut highlighter = HighlightLines::new(syntax, &self.theme);
 
         let mut out = Vec::new();
-        for line in LinesWithEndings::from(code) {
+        for (i, line) in LinesWithEndings::from(code).enumerate() {
             // On a highlight error (fancy-regex can fail on pathological
             // lines) fall back to the unstyled text — never drop the line.
             let ranges = highlighter
@@ -100,34 +106,38 @@ impl CodeHighlighter {
                     graphemes.push((g.to_string(), style));
                 }
             }
-            self.emit_wrapped(graphemes, width, &mut out);
+            self.emit_wrapped(graphemes, width, i, &mut out);
         }
         if out.is_empty() {
-            out.push(self.pad_row(Vec::new(), 0, width));
+            out.push((self.pad_row(Vec::new(), 0, width), None));
         }
         out
     }
 
-    /// Hard-wrap one logical code line into one or more padded rows.
+    /// Hard-wrap one logical code line into one or more padded rows; only the
+    /// first row is tagged with the line's index.
     fn emit_wrapped(
         &self,
         graphemes: Vec<(String, Style)>,
         width: usize,
-        out: &mut Vec<Line<'static>>,
+        source: usize,
+        out: &mut Vec<HighlightedRow>,
     ) {
         let mut row: Vec<(String, Style)> = Vec::new();
         let mut col = 0usize;
+        let mut first = true;
         for (g, style) in graphemes {
             let w = UnicodeWidthStr::width(g.as_str());
             if col + w > width && !row.is_empty() {
                 let taken = std::mem::take(&mut row);
-                out.push(self.pad_row(taken, col, width));
+                out.push((self.pad_row(taken, col, width), first.then_some(source)));
+                first = false;
                 col = 0;
             }
             row.push((g, style));
             col += w;
         }
-        out.push(self.pad_row(row, col, width));
+        out.push((self.pad_row(row, col, width), first.then_some(source)));
     }
 
     /// Coalesce same-style runs into spans and pad the row to `width` with the

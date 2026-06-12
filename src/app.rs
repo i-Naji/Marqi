@@ -963,15 +963,27 @@ impl App {
             return Some(self.layout.pos_to_byte(layout_row, col));
         }
 
-        // Elsewhere only some rows carry a source line number (a preview
-        // block labels just its first rendered row, so list items and table
-        // grid rows are unlabeled). Estimate from the nearest labeled row
-        // above plus the row distance — exact for tight lists, and close for
-        // tables, whose decorated grid has a couple more rows than the source
-        // (the click opens the block as raw source, where mapping is exact).
-        let (base_row, base_line) = (0..=row)
+        // Elsewhere preview rows carry a source line number where the renderer
+        // knows one exactly (list items, table grid rows, headings); chrome
+        // rows (table borders) and wrapped continuations do not. Estimate from
+        // the nearest labeled row above plus the row distance — exact for the
+        // labeled rows themselves, and close elsewhere (the click opens the
+        // block as raw source, where mapping is exact).
+        let Some((base_row, base_line)) = (0..=row)
             .rev()
-            .find_map(|r| view.line_numbers.get(r).copied().flatten().map(|l| (r, l)))?;
+            .find_map(|r| view.line_numbers.get(r).copied().flatten().map(|l| (r, l)))
+        else {
+            // Nothing labeled at or above (e.g. the top border of a table that
+            // opens the document): estimate back from the first labeled row
+            // below instead.
+            let (below_row, below_line) = (row + 1..view.line_numbers.len())
+                .find_map(|r| view.line_numbers.get(r).copied().flatten().map(|l| (r, l)))?;
+            let line = (below_line + row).saturating_sub(below_row).max(1);
+            let total = self.buffer.rope().len_lines();
+            let line0 = line.saturating_sub(1).min(total.saturating_sub(1));
+            let layout_row = self.layout.first_row_of_line(line0);
+            return Some(self.layout.pos_to_byte(layout_row, col));
+        };
         let mut line = base_line + (row - base_row); // 1-based
         // The next labeled row bounds the estimate: the clicked row's source
         // line cannot reach it.

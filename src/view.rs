@@ -24,7 +24,7 @@ use ropey::Rope;
 use crate::layout::{DisplayLine, Layout};
 use crate::markdown::{
     ActiveLeaf, CodeHighlighter, MarkdownTheme, gfm_options, merge_spans, render_block_node,
-    render_block_with_hole, render_preview, tokenizer,
+    render_block_with_hole, render_preview_rows, tokenizer,
 };
 
 pub struct HybridView {
@@ -72,6 +72,8 @@ struct SourceBlock {
 
 struct CachedBlock {
     lines: Vec<Line<'static>>,
+    /// Per-row source line within the block's slice (1-based), where known.
+    sources: Vec<Option<usize>>,
 }
 
 impl ViewCache {
@@ -95,15 +97,19 @@ impl ViewCache {
         width: usize,
         theme: &MarkdownTheme,
         highlighter: &CodeHighlighter,
-    ) -> Vec<Line<'static>> {
+    ) -> (Vec<Line<'static>>, Vec<Option<usize>>) {
         let source = source_slice(rope, block.start_byte, block.end_byte);
         let key = block_cache_key(&source, width, theme.heading_glyphs, theme.hard_breaks);
         if let Some(cached) = self.rendered.get(&key) {
             self.stats.block_hits += 1;
-            return cached.lines.clone();
+            return (cached.lines.clone(), cached.sources.clone());
         }
 
-        let lines = render_preview(&source, width, theme, highlighter);
+        let (lines, sources): (Vec<_>, Vec<_>) =
+            render_preview_rows(&source, width, theme, highlighter)
+                .into_iter()
+                .map(|row| (row.line, row.source))
+                .unzip();
         let bytes = rendered_size(&lines);
         if self.rendered_bytes + bytes > RENDER_CACHE_LIMIT_BYTES {
             self.rendered.clear();
@@ -114,10 +120,11 @@ impl ViewCache {
             key,
             CachedBlock {
                 lines: lines.clone(),
+                sources: sources.clone(),
             },
         );
         self.stats.block_renders += 1;
-        lines
+        (lines, sources)
     }
 }
 
@@ -137,7 +144,7 @@ pub fn render_preview_cached(
         if !out.is_empty() {
             out.push(Line::default());
         }
-        out.extend(cache.cached_block(rope, block, width, theme, highlighter));
+        out.extend(cache.cached_block(rope, block, width, theme, highlighter).0);
     }
     if out.is_empty() {
         out.push(Line::default());
@@ -212,13 +219,19 @@ pub fn build_cached(
             line_numbers.extend(active.line_numbers);
             lines.extend(active.lines);
         } else {
-            let mut block_lines = cache.cached_block(rope, block, width, theme, highlighter);
+            let (mut block_lines, sources) =
+                cache.cached_block(rope, block, width, theme, highlighter);
             if let Some((range, color)) = sel
                 && intersects((block.start_byte, block.end_byte), range)
             {
                 highlight_block(&mut block_lines, color);
             }
-            line_numbers.extend(block_line_numbers(block_lines.len(), block.start_line + 1));
+            // Map block-relative (1-based) source lines to absolute ones.
+            line_numbers.extend(
+                sources
+                    .into_iter()
+                    .map(|src| src.map(|rel| block.start_line + rel)),
+            );
             lines.extend(block_lines);
         }
         line = block.end_line + 1;
@@ -350,18 +363,23 @@ fn render_active_cached(
     let active = ActiveLeaf::new((rel_la, rel_lb), raw);
 
     let mut lines = Vec::new();
+    let mut sources = Vec::new();
     let mut hole_row = None;
     for child in root.children() {
-        if line_contains(child, rel_cursor) {
+        let child_rows = if line_contains(child, rel_cursor) {
             let before = lines.len();
-            let (child_lines, hole) =
+            let (child_rows, hole) =
                 render_block_with_hole(child, width, theme, highlighter, &active);
             if let Some(hole) = hole {
                 hole_row = Some(before + hole);
             }
-            lines.extend(child_lines);
+            child_rows
         } else {
-            lines.extend(render_block_node(child, width, theme, highlighter));
+            render_block_node(child, width, theme, highlighter)
+        };
+        for row in child_rows {
+            sources.push(row.source);
+            lines.push(row.line);
         }
     }
 
@@ -394,7 +412,12 @@ fn render_active_cached(
         }
     }
 
-    let mut line_numbers = block_line_numbers(lines.len(), block.start_line + 1);
+    // Map block-relative (1-based) source lines to absolute ones; the hole's
+    // raw rows then get exact per-row numbers from the full layout.
+    let mut line_numbers: Vec<Option<usize>> = sources
+        .into_iter()
+        .map(|src| src.map(|rel| block.start_line + rel))
+        .collect();
     if let Some(hole) = hole_row {
         for (offset, row) in layout.rows()[first_layout_row..first_layout_row + raw_len]
             .iter()
@@ -712,14 +735,6 @@ fn raw_row(
     merge_spans(items.into_iter())
 }
 
-fn block_line_numbers(count: usize, first_source_line: usize) -> Vec<Option<usize>> {
-    let mut nums = vec![None; count];
-    if let Some(first) = nums.first_mut() {
-        *first = Some(first_source_line);
-    }
-    nums
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -954,6 +969,32 @@ mod tests {
             lines[screen_row].contains("nested"),
             "cursor row {screen_row} should contain 'nested', got {:?}",
             lines.get(screen_row)
+        );
+    }
+
+    #[test]
+    fn inactive_list_and_table_rows_get_absolute_line_numbers() {
+        // Lines (1-based): 1 "intro", 2 blank, 3-4 list items, 5 blank,
+        // 6 header, 7 delimiter, 8 data row. Cursor stays in "intro" so the
+        // list and table render as inactive preview blocks.
+        let src = "intro\n\n- a\n- b\n\n| H |\n| - |\n| d |\n";
+        let rope = Rope::from_str(src);
+        let layout = Layout::build(&rope, 40, 4);
+        let theme = MarkdownTheme::default();
+        let hl = CodeHighlighter::new(None);
+        let view = view_for(&rope, &layout, 0, None, 40, &theme, &hl);
+
+        let labeled: Vec<usize> = view.line_numbers.iter().flatten().copied().collect();
+        for expect in [1, 3, 4, 6, 7, 8] {
+            assert!(
+                labeled.contains(&expect),
+                "line {expect} should appear in {labeled:?}"
+            );
+        }
+        // Table borders are chrome: no row may claim a line past the source.
+        assert!(
+            labeled.iter().all(|l| *l <= rope.len_lines()),
+            "labels must stay within the document: {labeled:?}"
         );
     }
 

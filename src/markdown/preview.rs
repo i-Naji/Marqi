@@ -25,6 +25,26 @@ struct Seg {
     style: Style,
 }
 
+/// One rendered preview row plus the 1-based source line it begins, when the
+/// renderer knows it exactly: lists label every item, tables every grid row
+/// (and the header separator with the `|---|` delimiter line). Wrapped
+/// continuation rows and pure chrome (table borders) carry `None`.
+pub struct Row {
+    pub line: Line<'static>,
+    pub source: Option<usize>,
+}
+
+impl Row {
+    fn unlabeled(line: Line<'static>) -> Self {
+        Self { line, source: None }
+    }
+}
+
+/// Wrap plain lines as unlabeled rows (the caller labels what it knows).
+fn unlabeled(lines: Vec<Line<'static>>) -> impl Iterator<Item = Row> {
+    lines.into_iter().map(Row::unlabeled)
+}
+
 /// The block that should render as raw source instead of preview (focus mode's
 /// "hole"): its 0-based inclusive line range, the precomputed raw lines to emit
 /// in its place, and where those lines landed in the output.
@@ -65,6 +85,19 @@ pub fn render(
     theme: &MarkdownTheme,
     highlighter: &CodeHighlighter,
 ) -> Vec<Line<'static>> {
+    render_rows(source, width, theme, highlighter)
+        .into_iter()
+        .map(|row| row.line)
+        .collect()
+}
+
+/// Like [`render`], but each row also carries the source line it begins.
+pub fn render_rows(
+    source: &str,
+    width: usize,
+    theme: &MarkdownTheme,
+    highlighter: &CodeHighlighter,
+) -> Vec<Row> {
     let arena = Arena::new();
     let root = parse_document(&arena, source, &gfm_options());
     let renderer = Renderer {
@@ -76,19 +109,19 @@ pub fn render(
     let mut out = Vec::new();
     renderer.render_block_children(root, width.max(1), &mut out, true);
     if out.is_empty() {
-        out.push(Line::default());
+        out.push(Row::unlabeled(Line::default()));
     }
     out
 }
 
-/// Render a single already-parsed block node to preview lines. Used by the
+/// Render a single already-parsed block node to preview rows. Used by the
 /// hybrid view to render inactive blocks (the active block renders raw instead).
 pub fn render_block_node<'a>(
     node: &'a AstNode<'a>,
     width: usize,
     theme: &MarkdownTheme,
     highlighter: &CodeHighlighter,
-) -> Vec<Line<'static>> {
+) -> Vec<Row> {
     let renderer = Renderer {
         theme,
         highlighter,
@@ -100,7 +133,7 @@ pub fn render_block_node<'a>(
 }
 
 /// Render a block as preview, but with one descendant block (`active`) emitted
-/// as raw lines in place ("preview with a hole"). Returns the rendered lines and
+/// as raw lines in place ("preview with a hole"). Returns the rendered rows and
 /// the index where the raw block landed (for cursor placement).
 pub fn render_block_with_hole<'a>(
     node: &'a AstNode<'a>,
@@ -108,7 +141,7 @@ pub fn render_block_with_hole<'a>(
     theme: &MarkdownTheme,
     highlighter: &CodeHighlighter,
     active: &ActiveLeaf,
-) -> (Vec<Line<'static>>, Option<usize>) {
+) -> (Vec<Row>, Option<usize>) {
     let renderer = Renderer {
         theme,
         highlighter,
@@ -137,13 +170,13 @@ impl<'r> Renderer<'r> {
         &self,
         parent: &'a AstNode<'a>,
         width: usize,
-        out: &mut Vec<Line<'static>>,
+        out: &mut Vec<Row>,
         loose: bool,
     ) {
         let mut first = true;
         for child in parent.children() {
             if !first && loose {
-                out.push(Line::default());
+                out.push(Row::unlabeled(Line::default()));
             }
             first = false;
             self.render_block(child, width, out);
@@ -152,7 +185,7 @@ impl<'r> Renderer<'r> {
 
     /// If `node` is the focus-mode active leaf, emit its raw lines in place and
     /// return true (so the caller skips its normal preview rendering).
-    fn try_emit_raw<'a>(&self, node: &'a AstNode<'a>, out: &mut Vec<Line<'static>>) -> bool {
+    fn try_emit_raw<'a>(&self, node: &'a AstNode<'a>, out: &mut Vec<Row>) -> bool {
         let sp = node.data.borrow().sourcepos;
         let range = (
             sp.start.line.saturating_sub(1),
@@ -163,25 +196,28 @@ impl<'r> Renderer<'r> {
 
     /// Emit the active leaf's raw lines in place if `range` is exactly its line
     /// range (used for the active node, or for a blank run between list items).
-    fn try_emit_raw_range(&self, range: (usize, usize), out: &mut Vec<Line<'static>>) -> bool {
+    /// The rows stay unlabeled: the hybrid view overwrites the hole with exact
+    /// per-row numbers from the full layout.
+    fn try_emit_raw_range(&self, range: (usize, usize), out: &mut Vec<Row>) -> bool {
         let Some(active) = self.active else {
             return false;
         };
         if range == active.lines {
             active.start_index.set(Some(out.len()));
-            out.extend(active.raw.iter().cloned());
+            out.extend(unlabeled(active.raw.clone()));
             true
         } else {
             false
         }
     }
 
-    fn render_block<'a>(&self, node: &'a AstNode<'a>, width: usize, out: &mut Vec<Line<'static>>) {
+    fn render_block<'a>(&self, node: &'a AstNode<'a>, width: usize, out: &mut Vec<Row>) {
         if self.try_emit_raw(node, out) {
             return;
         }
+        let first = out.len();
         let value = node.data.borrow().value.clone();
-        match value {
+        match &value {
             NodeValue::Heading(h) => {
                 let mut segs = self.inline_segs(node, self.theme.heading(h.level));
                 if self.theme.heading_glyphs {
@@ -193,13 +229,13 @@ impl<'r> Renderer<'r> {
                         },
                     );
                 }
-                out.extend(wrap(&segs, width, true));
+                out.extend(unlabeled(wrap(&segs, width, true)));
             }
             NodeValue::Paragraph => {
                 let segs = self.inline_segs(node, self.theme.text);
-                out.extend(wrap(&segs, width, true));
+                out.extend(unlabeled(wrap(&segs, width, true)));
             }
-            NodeValue::List(list) => self.render_list(node, &list, width, out),
+            NodeValue::List(list) => self.render_list(node, list, width, out),
             NodeValue::BlockQuote | NodeValue::MultilineBlockQuote(_) => {
                 let inner_w = width.saturating_sub(2).max(1);
                 let mut inner = Vec::new();
@@ -210,18 +246,36 @@ impl<'r> Renderer<'r> {
             }
             NodeValue::CodeBlock(cb) => {
                 let lang = cb.info.split_whitespace().next().unwrap_or("");
-                out.extend(self.highlighter.highlight(lang, &cb.literal, width));
+                // Literal lines map 1:1 to source lines (a fenced block's
+                // literal starts after the opening fence); the highlighter says
+                // which rows begin one, and hard-wrapped continuations stay
+                // unlabeled.
+                let start = node.data.borrow().sourcepos.start.line + usize::from(cb.fenced);
+                out.extend(
+                    self.highlighter
+                        .highlight(lang, &cb.literal, width)
+                        .into_iter()
+                        .map(|(line, src)| Row {
+                            line,
+                            source: src.map(|i| start + i),
+                        }),
+                );
             }
             NodeValue::ThematicBreak => {
-                out.push(Line::from(Span::styled(
+                out.push(Row::unlabeled(Line::from(Span::styled(
                     "\u{2500}".repeat(width),
                     self.theme.rule,
-                )));
+                ))));
             }
             NodeValue::Table(table) => self.render_table(node, &table.alignments, width, out),
             NodeValue::HtmlBlock(html) => {
-                for line in html.literal.lines() {
-                    out.push(Line::from(Span::styled(line.to_string(), self.theme.html)));
+                // The literal is the source lines verbatim, so they map 1:1.
+                let start = node.data.borrow().sourcepos.start.line;
+                for (i, line) in html.literal.lines().enumerate() {
+                    out.push(Row {
+                        line: Line::from(Span::styled(line.to_string(), self.theme.html)),
+                        source: Some(start + i),
+                    });
                 }
             }
             NodeValue::FootnoteDefinition(d) => {
@@ -232,12 +286,21 @@ impl<'r> Renderer<'r> {
                 let inner_w = width.saturating_sub(marker_w).max(1);
                 let mut inner = Vec::new();
                 self.render_block_children(node, inner_w, &mut inner, false);
-                let first = vec![Span::styled(marker, self.theme.list_marker)];
+                let first_prefix = vec![Span::styled(marker, self.theme.list_marker)];
                 let cont = vec![Span::raw(" ".repeat(marker_w))];
-                out.extend(prefix_lines(inner, first, cont));
+                out.extend(prefix_lines(inner, first_prefix, cont));
             }
             // Containers we render through (items handled by render_list).
             _ => self.render_block_children(node, width, out, false),
+        }
+        // Label the block's first rendered row with its starting source line
+        // when nothing more precise was recorded. A table is exempt: its first
+        // row is the top border, which deliberately stays unlabeled.
+        if !matches!(value, NodeValue::Table(_))
+            && let Some(row) = out.get_mut(first)
+            && row.source.is_none()
+        {
+            row.source = Some(node.data.borrow().sourcepos.start.line);
         }
     }
 
@@ -246,7 +309,7 @@ impl<'r> Renderer<'r> {
         node: &'a AstNode<'a>,
         list: &comrak::nodes::NodeList,
         width: usize,
-        out: &mut Vec<Line<'static>>,
+        out: &mut Vec<Row>,
     ) {
         let ordered = matches!(list.list_type, ListType::Ordered);
         let delim = match list.delimiter {
@@ -269,7 +332,11 @@ impl<'r> Renderer<'r> {
                     item_start.saturating_sub(1),
                 );
                 if gap.0 > gap.1 || !self.try_emit_raw_range(gap, out) {
-                    out.push(Line::default());
+                    // The separator stands in for the blank source line(s).
+                    out.push(Row {
+                        line: Line::default(),
+                        source: (gap.0 <= gap.1).then_some(gap.0 + 1),
+                    });
                 }
             }
             first = false;
@@ -284,6 +351,7 @@ impl<'r> Renderer<'r> {
             if self.try_emit_raw(item, out) {
                 continue;
             }
+            let item_first = out.len();
 
             let value = item.data.borrow().value.clone();
             let (marker, marker_style) = match &value {
@@ -307,7 +375,7 @@ impl<'r> Renderer<'r> {
             // marker (`-`, `1.`), while a task keeps its checkbox glyph (☐/☑).
             let is_empty = item_lines
                 .iter()
-                .all(|l| l.spans.iter().all(|s| s.content.trim().is_empty()));
+                .all(|r| r.line.spans.iter().all(|s| s.content.trim().is_empty()));
             if is_empty {
                 let (text, style) = match &value {
                     NodeValue::TaskItem(task) if task.symbol.is_some() => {
@@ -317,24 +385,34 @@ impl<'r> Renderer<'r> {
                     _ if ordered => (format!("{ordinal}{delim}"), self.theme.list_marker),
                     _ => (bullet.to_string(), self.theme.list_marker),
                 };
-                out.push(Line::from(Span::styled(text, style)));
+                out.push(Row {
+                    line: Line::from(Span::styled(text, style)),
+                    source: Some(item_start + 1),
+                });
                 continue;
             }
 
             let first_prefix = vec![Span::styled(marker, marker_style)];
             let cont_prefix = vec![Span::raw(" ".repeat(marker_w))];
             out.extend(prefix_lines(item_lines, first_prefix, cont_prefix));
+            // Label the item's marker row, unless its first child recorded
+            // something more precise (e.g. an item starting with a sub-block).
+            if let Some(row) = out.get_mut(item_first)
+                && row.source.is_none()
+            {
+                row.source = Some(item_start + 1);
+            }
         }
     }
 
     /// Render a list item's blocks: the first paragraph inline (so it sits on
     /// the marker line); everything else as nested blocks.
-    fn render_item<'a>(&self, item: &'a AstNode<'a>, width: usize, out: &mut Vec<Line<'static>>) {
+    fn render_item<'a>(&self, item: &'a AstNode<'a>, width: usize, out: &mut Vec<Row>) {
         for (i, child) in item.children().enumerate() {
             let is_paragraph = matches!(child.data.borrow().value, NodeValue::Paragraph);
             if i == 0 && is_paragraph {
                 let segs = self.inline_segs(child, self.theme.text);
-                out.extend(wrap(&segs, width, true));
+                out.extend(unlabeled(wrap(&segs, width, true)));
             } else {
                 self.render_block(child, width, out);
             }
@@ -346,22 +424,24 @@ impl<'r> Renderer<'r> {
         node: &'a AstNode<'a>,
         alignments: &[TableAlignment],
         width: usize,
-        out: &mut Vec<Line<'static>>,
+        out: &mut Vec<Row>,
     ) {
         // Collect rows of cells as styled inline segments so per-cell formatting
-        // (bold, code, links…) is preserved, not flattened to plain text.
-        let mut rows: Vec<(bool, Vec<Vec<Seg>>)> = Vec::new();
+        // (bold, code, links…) is preserved, not flattened to plain text. Each
+        // pipe row keeps its source line so the grid rows can be labeled.
+        let mut rows: Vec<(bool, usize, Vec<Vec<Seg>>)> = Vec::new();
         for row in node.children() {
             let is_header = matches!(row.data.borrow().value, NodeValue::TableRow(true));
+            let source_line = row.data.borrow().sourcepos.start.line;
             let cells = row
                 .children()
                 .map(|cell| self.inline_segs(cell, self.theme.text))
                 .collect();
-            rows.push((is_header, cells));
+            rows.push((is_header, source_line, cells));
         }
         let columns = alignments
             .len()
-            .max(rows.iter().map(|r| r.1.len()).max().unwrap_or(0));
+            .max(rows.iter().map(|r| r.2.len()).max().unwrap_or(0));
         if columns == 0 {
             return;
         }
@@ -369,7 +449,7 @@ impl<'r> Renderer<'r> {
         // Natural column widths, then shrink to fit `width` (accounting for
         // borders "+ x +" and one space of padding each side).
         let mut col_w = vec![0usize; columns];
-        for (_, cells) in &rows {
+        for (_, _, cells) in &rows {
             for (i, c) in cells.iter().enumerate() {
                 col_w[i] = col_w[i].max(segs_width(c));
             }
@@ -391,9 +471,11 @@ impl<'r> Renderer<'r> {
             Line::from(Span::styled(s, border))
         };
 
-        out.push(line("\u{250c}", "\u{252c}", "\u{2510}"));
+        // Borders are chrome with no source line; each grid row carries its
+        // pipe row's line, and the header separator the `|---|` delimiter's.
+        out.push(Row::unlabeled(line("\u{250c}", "\u{252c}", "\u{2510}")));
         let empty: Vec<Seg> = Vec::new();
-        for (ri, (is_header, cells)) in rows.iter().enumerate() {
+        for (ri, (is_header, source_line, cells)) in rows.iter().enumerate() {
             let mut spans = vec![Span::styled("\u{2502}", border)];
             // Header cells layer the theme's header modifier (bold) over their
             // own inline styles.
@@ -406,12 +488,18 @@ impl<'r> Renderer<'r> {
                 spans.push(Span::raw(" "));
                 spans.push(Span::styled("\u{2502}", border));
             }
-            out.push(Line::from(spans));
+            out.push(Row {
+                line: Line::from(spans),
+                source: Some(*source_line),
+            });
             if *is_header && ri == 0 {
-                out.push(line("\u{251c}", "\u{253c}", "\u{2524}"));
+                out.push(Row {
+                    line: line("\u{251c}", "\u{253c}", "\u{2524}"),
+                    source: Some(source_line + 1),
+                });
             }
         }
-        out.push(line("\u{2514}", "\u{2534}", "\u{2518}"));
+        out.push(Row::unlabeled(line("\u{2514}", "\u{2534}", "\u{2518}")));
     }
 
     // --- inline ---
@@ -494,11 +582,11 @@ impl<'r> Renderer<'r> {
 
 /// Replace the `from` style with `to` on every span that uses it, leaving other
 /// styles (emphasis, code, links) intact. Used to tint plain block-quote text.
-fn restyle(lines: Vec<Line<'static>>, from: Style, to: Style) -> Vec<Line<'static>> {
-    lines
-        .into_iter()
-        .map(|line| {
-            let spans: Vec<Span<'static>> = line
+fn restyle(rows: Vec<Row>, from: Style, to: Style) -> Vec<Row> {
+    rows.into_iter()
+        .map(|row| {
+            let spans: Vec<Span<'static>> = row
+                .line
                 .spans
                 .into_iter()
                 .map(|mut s| {
@@ -508,7 +596,10 @@ fn restyle(lines: Vec<Line<'static>>, from: Style, to: Style) -> Vec<Line<'stati
                     s
                 })
                 .collect();
-            Line::from(spans)
+            Row {
+                line: Line::from(spans),
+                source: row.source,
+            }
         })
         .collect()
 }
@@ -591,19 +682,17 @@ fn is_word_boundary_after(text: &str, at: usize) -> bool {
             .is_none_or(|c| !c.is_ascii_alphanumeric() && c != '_')
 }
 
-/// Prefix each line of `lines`: the first with `first`, the rest with `cont`.
-fn prefix_lines(
-    lines: Vec<Line<'static>>,
-    first: Vec<Span<'static>>,
-    cont: Vec<Span<'static>>,
-) -> Vec<Line<'static>> {
-    lines
-        .into_iter()
+/// Prefix each row of `rows`: the first with `first`, the rest with `cont`.
+fn prefix_lines(rows: Vec<Row>, first: Vec<Span<'static>>, cont: Vec<Span<'static>>) -> Vec<Row> {
+    rows.into_iter()
         .enumerate()
-        .map(|(i, mut line)| {
+        .map(|(i, mut row)| {
             let mut spans = if i == 0 { first.clone() } else { cont.clone() };
-            spans.append(&mut line.spans);
-            Line::from(spans)
+            spans.append(&mut row.line.spans);
+            Row {
+                line: Line::from(spans),
+                source: row.source,
+            }
         })
         .collect()
 }
@@ -957,6 +1046,77 @@ mod tests {
             task.lines().any(|l| l.trim() == "\u{2610}"),
             "empty unchecked task -> checkbox glyph:\n{task}"
         );
+    }
+
+    fn rows_with_sources(src: &str, width: usize) -> Vec<(String, Option<usize>)> {
+        let theme = MarkdownTheme::default();
+        let hl = CodeHighlighter::new(None);
+        render_rows(src, width, &theme, &hl)
+            .iter()
+            .map(|r| {
+                let text: String = r.line.spans.iter().map(|s| s.content.as_ref()).collect();
+                (text, r.source)
+            })
+            .collect()
+    }
+
+    #[test]
+    fn every_list_item_carries_its_source_line() {
+        let rows = rows_with_sources("- a\n- b\n- c", 40);
+        let sources: Vec<Option<usize>> = rows.iter().map(|(_, s)| *s).collect();
+        assert_eq!(sources, vec![Some(1), Some(2), Some(3)], "{rows:?}");
+    }
+
+    #[test]
+    fn loose_and_nested_list_items_carry_source_lines() {
+        // 1: "1. one", 2: blank, 3: "2. two", 4: nested "- sub"
+        let rows = rows_with_sources("1. one\n\n2. two\n   - sub", 40);
+        for expect in [1, 2, 3, 4] {
+            assert!(
+                rows.iter().any(|(_, s)| *s == Some(expect)),
+                "line {expect} should label a row: {rows:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn table_rows_carry_source_lines_but_borders_do_not() {
+        // 1: header, 2: delimiter, 3-4: data rows.
+        let src = "| A | B |\n| - | - |\n| 1 | 2 |\n| 3 | 4 |";
+        let rows = rows_with_sources(src, 40);
+        let sources: Vec<Option<usize>> = rows.iter().map(|(_, s)| *s).collect();
+        assert_eq!(
+            sources,
+            vec![None, Some(1), Some(2), Some(3), Some(4), None],
+            "top border, header, separator, two data rows, bottom border: {rows:?}"
+        );
+    }
+
+    #[test]
+    fn wrapped_paragraph_labels_only_its_first_row() {
+        let rows = rows_with_sources("one two three four five six seven eight nine ten", 12);
+        assert!(rows.len() > 1, "paragraph should wrap: {rows:?}");
+        assert_eq!(rows[0].1, Some(1));
+        assert!(
+            rows[1..].iter().all(|(_, s)| s.is_none()),
+            "continuation rows stay unlabeled: {rows:?}"
+        );
+    }
+
+    #[test]
+    fn code_block_rows_label_every_literal_line() {
+        // 1: fence, 2-3: literal lines, 4: fence.
+        let rows = rows_with_sources("```rust\nlet a = 1;\nlet b = 2;\n```", 40);
+        let sources: Vec<Option<usize>> = rows.iter().map(|(_, s)| *s).collect();
+        assert_eq!(sources, vec![Some(2), Some(3)], "{rows:?}");
+    }
+
+    #[test]
+    fn hard_wrapped_code_labels_only_the_row_starting_the_line() {
+        // Line 2 is 20 columns and hard-wraps at width 10 into two rows.
+        let rows = rows_with_sources("```\naaaaaaaaaaaaaaaaaaaa\nbb\n```", 10);
+        let sources: Vec<Option<usize>> = rows.iter().map(|(_, s)| *s).collect();
+        assert_eq!(sources, vec![Some(2), None, Some(3)], "{rows:?}");
     }
 
     #[test]
