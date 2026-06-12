@@ -18,6 +18,27 @@ use crate::color::rgb;
 pub fn draw(frame: &mut Frame, app: &mut App) {
     let [editor_area, status_area] =
         RatatuiLayout::vertical([Constraint::Min(1), Constraint::Length(1)]).areas(frame.area());
+    // The left margin (config `editor.left_margin`) pads every view from the
+    // terminal edge; clamp it so at least one content column survives. It is
+    // painted with the theme background, which the terminal's own may differ
+    // from.
+    let margin = app
+        .left_margin()
+        .min(editor_area.width.saturating_sub(1) as usize) as u16;
+    let editor_area = if margin > 0 {
+        let [margin_area, rest] = RatatuiLayout::new(
+            Direction::Horizontal,
+            [Constraint::Length(margin), Constraint::Min(1)],
+        )
+        .areas(editor_area);
+        frame.render_widget(
+            Paragraph::new("").style(Style::new().bg(app.theme().background)),
+            margin_area,
+        );
+        rest
+    } else {
+        editor_area
+    };
     let gutter_width = gutter_width(app, editor_area.width as usize);
     let (gutter_area, content_area) = if gutter_width > 0 {
         let [gutter, content] = RatatuiLayout::new(
@@ -31,7 +52,7 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
     };
 
     app.set_viewport(content_area.width as usize, content_area.height as usize);
-    app.set_gutter_width(gutter_width);
+    app.set_left_offset(margin as usize + gutter_width);
 
     let prompt = app.prompt_view();
     let height = content_area.height as usize;
@@ -489,5 +510,45 @@ mod tests {
         let mut app = App::with_config(TextBuffer::scratch("a\n", "test.md"), &Config::default());
         app.set_viewport(20, 4);
         assert_eq!(gutter_width(&app, 20), 0);
+    }
+
+    /// Render a full frame and return the symbols of the first row.
+    fn first_row(app: &mut App, width: u16) -> String {
+        let backend = ratatui::backend::TestBackend::new(width, 5);
+        let mut terminal = ratatui::Terminal::new(backend).unwrap();
+        terminal.draw(|frame| super::draw(frame, app)).unwrap();
+        let buffer = terminal.backend().buffer();
+        (0..width)
+            .map(|x| buffer.cell((x, 0)).unwrap().symbol())
+            .collect()
+    }
+
+    #[test]
+    fn default_left_margin_pads_one_column() {
+        let mut app = App::with_config(TextBuffer::scratch("hi\n", "test.md"), &Config::default());
+        assert!(first_row(&mut app, 20).starts_with(" hi"));
+    }
+
+    #[test]
+    fn left_margin_zero_starts_at_the_edge() {
+        let cfg: Config = toml::from_str("[editor]\nleft_margin = 0\n").unwrap();
+        let mut app = App::with_config(TextBuffer::scratch("hi\n", "test.md"), &cfg);
+        assert!(first_row(&mut app, 20).starts_with("hi"));
+    }
+
+    #[test]
+    fn left_margin_shifts_content_and_gutter() {
+        let cfg: Config =
+            toml::from_str("[editor]\nleft_margin = 3\nline_numbers = \"absolute\"\n").unwrap();
+        let mut app = App::with_config(TextBuffer::scratch("hi\n", "test.md"), &cfg);
+        assert!(first_row(&mut app, 20).starts_with("   1 hi"));
+    }
+
+    #[test]
+    fn oversized_left_margin_keeps_a_content_column() {
+        let cfg: Config = toml::from_str("[editor]\nleft_margin = 100\n").unwrap();
+        let mut app = App::with_config(TextBuffer::scratch("hi\n", "test.md"), &cfg);
+        // 9 margin columns (width - 1) and a single content column remain.
+        assert_eq!(first_row(&mut app, 10), "         h");
     }
 }

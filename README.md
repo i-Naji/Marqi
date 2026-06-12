@@ -70,6 +70,7 @@ a TOML file directly (`marqi -c my-config.toml`) or a directory containing
 [editor]
 keybindings = "standard"   # "standard" | "vim" | "nano" | "emacs"
 line_numbers = "off"       # "off" | "absolute" | "relative"
+left_margin = 1            # blank columns left of the text (0 disables)
 auto_save = false          # save ~2s after you stop typing
 
 [theme]

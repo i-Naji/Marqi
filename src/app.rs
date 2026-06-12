@@ -161,13 +161,15 @@ pub struct App {
 
     tab_width: usize,
     scrolloff: usize,
+    /// Blank columns left of the editor content (config `editor.left_margin`).
+    left_margin: usize,
 
     // Viewport geometry, refreshed by the UI layer each draw.
     wrap_width: usize,
     viewport_height: usize,
-    /// Width of the line-number gutter the UI drew last frame; mouse clicks
-    /// subtract it to find the content column.
-    gutter_width: usize,
+    /// Columns left of the content area (margin plus line-number gutter) as
+    /// drawn last frame; mouse clicks subtract it to find the content column.
+    left_offset: usize,
 
     // Cached raw layout plus the width it was built for and a dirty flag.
     layout: Layout,
@@ -224,9 +226,10 @@ impl App {
             mouse_press_byte: None,
             tab_width: DEFAULT_TAB_WIDTH,
             scrolloff: DEFAULT_SCROLLOFF,
+            left_margin: 1,
             wrap_width: 1,
             viewport_height: 0,
-            gutter_width: 0,
+            left_offset: 0,
             layout,
             layout_width: 1,
             layout_dirty: true,
@@ -276,6 +279,7 @@ impl App {
         app.mode = app.resting_mode();
         app.tab_width = config.editor.tab_width.max(1);
         app.scrolloff = config.editor.scrolloff;
+        app.left_margin = config.editor.left_margin;
         app.auto_save = config.editor.auto_save;
         app.theme = MarkdownTheme::from_variant(&config.theme.variant);
         app.theme.heading_glyphs = config.editor.heading_glyphs;
@@ -325,6 +329,10 @@ impl App {
         self.line_numbers
     }
 
+    pub fn left_margin(&self) -> usize {
+        self.left_margin
+    }
+
     pub fn theme(&self) -> &MarkdownTheme {
         &self.theme
     }
@@ -353,9 +361,10 @@ impl App {
         }
     }
 
-    /// Record the gutter width the UI drew, so mouse clicks can subtract it.
-    pub fn set_gutter_width(&mut self, width: usize) {
-        self.gutter_width = width;
+    /// Record where the UI drew the content's left edge (margin plus gutter),
+    /// so mouse clicks can subtract it.
+    pub fn set_left_offset(&mut self, width: usize) {
+        self.left_offset = width;
     }
 
     /// Whether drawing should scroll to keep the cursor visible.
@@ -951,7 +960,7 @@ impl App {
         self.ensure_view();
         let view = self.view();
         let row = (self.scroll_y + y as usize).min(view.lines.len().saturating_sub(1));
-        let col = (x as usize).saturating_sub(self.gutter_width) as u16;
+        let col = (x as usize).saturating_sub(self.left_offset) as u16;
 
         // Rows inside the active raw run map 1:1 onto layout rows.
         let active_row_count = self

@@ -7,6 +7,7 @@
 //! keybindings = "standard"   # "standard" | "vim" | "nano" | "emacs"
 //! line_numbers = "off"       # "off" | "absolute" | "relative"
 //! heading_glyphs = true
+//! left_margin = 1
 //! tab_width = 4
 //! scrolloff = 3
 //!
@@ -40,6 +41,9 @@ pub struct EditorConfig {
     /// How a single source newline renders in the preview: "space" (markdown
     /// reflow) or "break" (a visible line break, Obsidian-style).
     pub soft_break: String,
+    /// Blank columns between the terminal's left edge and the editor content
+    /// (0 disables).
+    pub left_margin: usize,
     pub tab_width: usize,
     pub scrolloff: usize,
     /// Save automatically ~2 seconds after the last edit (named buffers only).
@@ -53,6 +57,7 @@ impl Default for EditorConfig {
             line_numbers: "off".to_string(),
             heading_glyphs: true,
             soft_break: "space".to_string(),
+            left_margin: 1,
             tab_width: 4,
             scrolloff: 3,
             auto_save: false,
@@ -196,7 +201,21 @@ mod tests {
         assert_eq!(cfg.editor.keybindings, "standard");
         assert_eq!(cfg.editor.line_numbers, "off");
         assert!(cfg.editor.heading_glyphs);
+        assert_eq!(cfg.editor.left_margin, 1);
         assert_eq!(cfg.theme.variant, "auto");
+    }
+
+    #[test]
+    fn left_margin_accepts_zero_and_rejects_negatives() {
+        let cfg: Config = toml::from_str("[editor]\nleft_margin = 0\n").unwrap();
+        assert_eq!(cfg.editor.left_margin, 0);
+
+        let path = temp_path("negative_margin");
+        std::fs::write(&path, "[editor]\nleft_margin = -1\n").unwrap();
+        let (cfg, warning) = Config::load_from_path(&path);
+        assert!(warning.is_some(), "a negative margin must warn");
+        assert_eq!(cfg.editor.left_margin, 1, "and fall back to the default");
+        std::fs::remove_file(&path).ok();
     }
 
     #[test]

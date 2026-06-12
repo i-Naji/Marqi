@@ -9,7 +9,7 @@
 # Keybinding preset: "standard" (default), "vim", "nano", or "emacs".
 keybindings = "standard"
 # Line number gutter in hybrid editing mode: "off", "absolute", or "relative".
-line_numbers = "relative"
+line_numbers = "absolute"
 # Preview-only symbols before rendered headings.
 heading_glyphs = true
 # How a single source newline renders in the preview: "space" (markdown reflow,
@@ -18,8 +18,11 @@ soft_break = "space"
 # Save automatically ~2 seconds after the last edit. Applies only to buffers
 # that already have a filename (an unnamed buffer never pops a prompt at you).
 auto_save = false
+# Blank columns between the terminal's left edge and the editor content.
+# 0 or any positive number; 0 starts text flush at the edge.
+left_margin = 1
 tab_width = 4
-scrolloff = 15
+scrolloff = 3
 
 [theme]
 # Built-in editor palette: "auto", "dark", or "light".
