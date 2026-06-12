@@ -12,6 +12,11 @@
 //! scrolloff = 3
 //!
 //! [theme]
+//! name = "default"                 # palette family: "default" picks One Dark
+//!                                  # (dark) / GitHub (light); also: "marqi",
+//!                                  # "onedark", "github", "catppuccin",
+//!                                  # "tokyonight", "gruvbox", "nord",
+//!                                  # "dracula", "solarized"
 //! variant = "auto"                 # "auto" | "dark" | "light"
 //! # syntax = "base16-ocean.dark"   # optional syntect theme override
 //!
@@ -68,6 +73,10 @@ impl Default for EditorConfig {
 #[derive(Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct ThemeConfig {
+    /// Palette family name ("onedark", "github", "catppuccin", ...). Empty or
+    /// "default" picks the most popular face per variant: One Dark when dark,
+    /// GitHub when light. "marqi" keeps the original palette.
+    pub name: String,
     /// Built-in markdown/editor palette variant: "auto", "dark", or "light".
     pub variant: String,
     /// A syntect theme name for fenced code blocks.
@@ -79,6 +88,7 @@ pub struct ThemeConfig {
 impl Default for ThemeConfig {
     fn default() -> Self {
         Self {
+            name: String::new(),
             variant: "auto".to_string(),
             syntax: None,
             markdown: HashMap::new(),
@@ -193,6 +203,21 @@ mod tests {
     }
 
     #[test]
+    fn theme_name_parses_from_toml() {
+        let path = temp_path("theme_name");
+        std::fs::write(
+            &path,
+            "[theme]\nname = \"catppuccin\"\nvariant = \"dark\"\n",
+        )
+        .unwrap();
+        let (cfg, warning) = Config::load_from_path(&path);
+        std::fs::remove_file(&path).ok();
+        assert!(warning.is_none(), "warning: {warning:?}");
+        assert_eq!(cfg.theme.name, "catppuccin");
+        assert_eq!(cfg.theme.variant, "dark");
+    }
+
+    #[test]
     fn missing_config_is_quiet_default() {
         let path = temp_path("missing");
         std::fs::remove_file(&path).ok();
@@ -203,6 +228,10 @@ mod tests {
         assert!(cfg.editor.heading_glyphs);
         assert_eq!(cfg.editor.left_margin, 1);
         assert_eq!(cfg.theme.variant, "auto");
+        assert_eq!(
+            cfg.theme.name, "",
+            "unset name selects the per-mode default"
+        );
     }
 
     #[test]
