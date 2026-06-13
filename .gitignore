@@ -1,5 +1,8 @@
 /target/
 
+# Local benchmark harness + editxr checkout (dev-only, not published)
+/bench/
+
 # Local editor and OS noise
 .DS_Store
 .idea/
