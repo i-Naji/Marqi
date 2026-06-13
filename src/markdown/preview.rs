@@ -263,7 +263,7 @@ impl<'r> Renderer<'r> {
             }
             NodeValue::ThematicBreak => {
                 out.push(Row::unlabeled(Line::from(Span::styled(
-                    "\u{2500}".repeat(width),
+                    "\u{2501}".repeat(width),
                     self.theme.rule,
                 ))));
             }
@@ -357,9 +357,9 @@ impl<'r> Renderer<'r> {
             let (marker, marker_style) = match &value {
                 NodeValue::TaskItem(task) => {
                     if task.symbol.is_some() {
-                        ("\u{2611} ".to_string(), self.theme.task_done)
+                        ("\u{25a0} ".to_string(), self.theme.task_done)
                     } else {
-                        ("\u{2610} ".to_string(), self.theme.task_todo)
+                        ("\u{25a1} ".to_string(), self.theme.task_todo)
                     }
                 }
                 _ if ordered => (format!("{ordinal}{delim} "), self.theme.list_marker),
@@ -379,9 +379,9 @@ impl<'r> Renderer<'r> {
             if is_empty {
                 let (text, style) = match &value {
                     NodeValue::TaskItem(task) if task.symbol.is_some() => {
-                        ("\u{2611}".to_string(), self.theme.task_done)
+                        ("\u{25a0}".to_string(), self.theme.task_done)
                     }
-                    NodeValue::TaskItem(_) => ("\u{2610}".to_string(), self.theme.task_todo),
+                    NodeValue::TaskItem(_) => ("\u{25a1}".to_string(), self.theme.task_todo),
                     _ if ordered => (format!("{ordinal}{delim}"), self.theme.list_marker),
                     _ => (bullet.to_string(), self.theme.list_marker),
                 };
@@ -473,7 +473,7 @@ impl<'r> Renderer<'r> {
 
         // Borders are chrome with no source line; each grid row carries its
         // pipe row's line, and the header separator the `|---|` delimiter's.
-        out.push(Row::unlabeled(line("\u{250c}", "\u{252c}", "\u{2510}")));
+        out.push(Row::unlabeled(line("\u{256d}", "\u{252c}", "\u{256e}")));
         let empty: Vec<Seg> = Vec::new();
         for (ri, (is_header, source_line, cells)) in rows.iter().enumerate() {
             let mut spans = vec![Span::styled("\u{2502}", border)];
@@ -499,7 +499,7 @@ impl<'r> Renderer<'r> {
                 });
             }
         }
-        out.push(Row::unlabeled(line("\u{2514}", "\u{2534}", "\u{2518}")));
+        out.push(Row::unlabeled(line("\u{2570}", "\u{2534}", "\u{256f}")));
     }
 
     // --- inline ---
@@ -553,9 +553,9 @@ impl<'r> Renderer<'r> {
                 }
                 NodeValue::TaskItem(task) => {
                     let (glyph, st) = if task.symbol.is_some() {
-                        ("\u{2611} ", self.theme.task_done)
+                        ("\u{25a0} ", self.theme.task_done)
                     } else {
-                        ("\u{2610} ", self.theme.task_todo)
+                        ("\u{25a1} ", self.theme.task_todo)
                     };
                     out.push(Seg {
                         text: glyph.into(),
@@ -605,13 +605,16 @@ fn restyle(rows: Vec<Row>, from: Style, to: Style) -> Vec<Row> {
 }
 
 fn heading_glyph(level: u8) -> &'static str {
+    // Two tiers of descending visual weight, all width-1 and text-only (no
+    // emoji-presentation): diamonds for H1-H3 (solid -> pip -> hollow),
+    // circles for H4-H6 (solid -> hollow -> small bullet).
     match level {
-        1 => "\u{25c6}",
-        2 => "\u{25c7}",
-        3 => "\u{25cf}",
-        4 => "\u{25cb}",
-        5 => "\u{25aa}",
-        _ => "\u{25ab}",
+        1 => "\u{25c6}", // ◆
+        2 => "\u{25c8}", // ◈
+        3 => "\u{25c7}", // ◇
+        4 => "\u{25cf}", // ●
+        5 => "\u{25cb}", // ○
+        _ => "\u{25e6}", // ◦
     }
 }
 
@@ -948,8 +951,8 @@ mod tests {
     #[test]
     fn task_list_shows_checkboxes_not_brackets() {
         let text = render_plain("- [x] done\n- [ ] todo", 40);
-        assert!(text.contains('\u{2611}')); // checked box
-        assert!(text.contains('\u{2610}')); // empty box
+        assert!(text.contains('\u{25a0}')); // checked box ■
+        assert!(text.contains('\u{25a1}')); // empty box □
         assert!(!text.contains("[x]"));
     }
 
@@ -968,8 +971,8 @@ mod tests {
     fn table_renders_a_grid() {
         let src = "| A | B |\n| - | - |\n| 1 | 2 |";
         let text = render_plain(src, 40);
-        assert!(text.contains('\u{2502}')); // vertical border
-        assert!(text.contains('\u{250c}')); // top-left corner
+        assert!(text.contains('\u{2502}')); // vertical border │
+        assert!(text.contains('\u{256d}')); // top-left corner ╭
     }
 
     #[test]
@@ -1043,7 +1046,7 @@ mod tests {
         );
         let task = render_plain("- [ ] a\n- [ ] ", 40);
         assert!(
-            task.lines().any(|l| l.trim() == "\u{2610}"),
+            task.lines().any(|l| l.trim() == "\u{25a1}"),
             "empty unchecked task -> checkbox glyph:\n{task}"
         );
     }
