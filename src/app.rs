@@ -117,6 +117,26 @@ struct EditImpact {
     new_line_count: usize,
 }
 
+/// Wall-clock durations of the most recent expensive pipeline steps, for the
+/// `MARQI_STATS` overlay. Zero means "not run yet this session".
+#[derive(Default, Clone, Copy)]
+pub struct DebugTimings {
+    pub last_layout_us: u128,
+    /// Last whole-document block partition, copied from [`ViewCacheStats`].
+    pub last_parse_us: u128,
+    /// Last hybrid/raw/preview structure build.
+    pub last_view_build_us: u128,
+}
+
+/// Whether `MARQI_STATS` debug counters should be displayed (status-bar
+/// segment + exit dump). Read once; flipping the variable mid-session is not
+/// supported.
+pub fn stats_enabled() -> bool {
+    static ENABLED: std::sync::LazyLock<bool> =
+        std::sync::LazyLock::new(|| std::env::var_os("MARQI_STATS").is_some_and(|v| v != "0"));
+    *ENABLED
+}
+
 pub struct App {
     pub buffer: TextBuffer,
     pub cursor: Cursor,
@@ -194,6 +214,9 @@ pub struct App {
     view_selection: Option<(usize, usize)>,
     /// Cursor line the raw view was built for (its active-line highlight).
     view_cursor_line: usize,
+
+    /// Most recent pipeline timings (see [`DebugTimings`]).
+    timings: DebugTimings,
 }
 
 impl App {
@@ -245,6 +268,7 @@ impl App {
             view_width: 0,
             view_selection: None,
             view_cursor_line: usize::MAX,
+            timings: DebugTimings::default(),
         }
     }
 
@@ -347,6 +371,59 @@ impl App {
 
     pub fn cursor_shape(&self) -> CursorShape {
         self.cursor_shape
+    }
+
+    pub fn debug_stats(
+        &self,
+    ) -> (
+        DebugTimings,
+        view::ViewCacheStats,
+        crate::layout::LayoutStats,
+    ) {
+        let cache = self.view_cache.stats();
+        let mut timings = self.timings;
+        timings.last_parse_us = cache.last_parse_us;
+        (timings, cache, self.layout.stats())
+    }
+
+    /// One-line counter summary for the `MARQI_STATS` status-bar segment.
+    pub fn stats_line(&self) -> String {
+        let ms = |us: u128| us as f64 / 1000.0;
+        let (timings, cache, layout) = self.debug_stats();
+        format!(
+            "lay {:.1} prs {:.1} view {:.1}ms · blk {} hit {} ren {} · {}KB · rows {}",
+            ms(timings.last_layout_us),
+            ms(timings.last_parse_us),
+            ms(timings.last_view_build_us),
+            cache.blocks_total,
+            cache.block_hits,
+            cache.block_renders,
+            cache.rendered_bytes / 1024,
+            layout.rows_live,
+        )
+    }
+
+    /// Multi-line counter summary printed on exit under `MARQI_STATS`.
+    pub fn stats_dump(&self) -> String {
+        let ms = |us: u128| us as f64 / 1000.0;
+        let (timings, cache, layout) = self.debug_stats();
+        format!(
+            "marqi stats\n\
+             \x20 layout: {} rows live · {} rows / {} cells built · last build {:.1}ms\n\
+             \x20 parse:  {} blocks · last partition {:.1}ms\n\
+             \x20 view:   last build {:.1}ms · {} hits · {} renders · {} clears · {}KB cached",
+            layout.rows_live,
+            layout.rows_built,
+            layout.cells_built,
+            ms(timings.last_layout_us),
+            cache.blocks_total,
+            ms(timings.last_parse_us),
+            ms(timings.last_view_build_us),
+            cache.block_hits,
+            cache.block_renders,
+            cache.cache_clears,
+            cache.rendered_bytes / 1024,
+        )
     }
 
     /// Record the editor area size and refresh the layout/preview/view for it.
@@ -1333,7 +1410,9 @@ impl App {
 
     fn ensure_layout(&mut self) {
         if self.layout_dirty || self.layout_width != self.wrap_width {
+            let started = Instant::now();
             self.layout = Layout::build(self.buffer.rope(), self.wrap_width, self.tab_width);
+            self.timings.last_layout_us = started.elapsed().as_micros();
             self.layout_width = self.wrap_width;
             self.layout_dirty = false;
         }
@@ -1342,6 +1421,7 @@ impl App {
     /// Rebuild the rendered preview if the content or width changed.
     fn ensure_preview(&mut self) {
         if self.preview_dirty || self.preview_width != self.wrap_width {
+            let started = Instant::now();
             self.preview = view::render_preview_cached(
                 &mut self.view_cache,
                 self.buffer.rope(),
@@ -1350,6 +1430,7 @@ impl App {
                 &self.highlighter,
                 self.version,
             );
+            self.timings.last_view_build_us = started.elapsed().as_micros();
             self.preview_width = self.wrap_width;
             self.preview_dirty = false;
         }
@@ -1374,6 +1455,7 @@ impl App {
                 && (v.active_lines.0..=v.active_lines.1).contains(&cursor_line)
         });
         if !still_valid {
+            let started = Instant::now();
             self.view = Some(view::build_cached(
                 &mut self.view_cache,
                 self.buffer.rope(),
@@ -1385,6 +1467,7 @@ impl App {
                 &self.highlighter,
                 self.version,
             ));
+            self.timings.last_view_build_us = started.elapsed().as_micros();
             self.view_version = self.version;
             self.view_width = self.wrap_width;
             self.view_selection = selection;
@@ -1403,6 +1486,7 @@ impl App {
             && self.view_selection == selection
             && self.view_cursor_line == cursor_line;
         if !still_valid {
+            let started = Instant::now();
             self.view = Some(view::build_raw(
                 self.buffer.rope(),
                 &self.layout,
@@ -1410,6 +1494,7 @@ impl App {
                 selection,
                 &self.theme,
             ));
+            self.timings.last_view_build_us = started.elapsed().as_micros();
             self.view_version = self.version;
             self.view_width = self.wrap_width;
             self.view_selection = selection;

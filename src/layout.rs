@@ -69,6 +69,17 @@ impl DisplayLine {
     }
 }
 
+/// Lifetime construction counters plus a snapshot of what is currently stored.
+#[derive(Default, Clone, Copy)]
+pub struct LayoutStats {
+    /// Display rows constructed since the layout was created (cumulative).
+    pub rows_built: usize,
+    /// Cells constructed since the layout was created (cumulative).
+    pub cells_built: usize,
+    /// Display rows currently stored (snapshot).
+    pub rows_live: usize,
+}
+
 /// The document laid out into display rows for a given wrap width.
 pub struct Layout {
     lines: Vec<DisplayLine>,
@@ -76,6 +87,7 @@ pub struct Layout {
     line_starts: Vec<usize>,
     wrap_width: usize,
     tab_width: usize,
+    stats: LayoutStats,
 }
 
 impl Layout {
@@ -89,9 +101,17 @@ impl Layout {
             line_starts: Vec::new(),
             wrap_width,
             tab_width,
+            stats: LayoutStats::default(),
         };
         layout.rebuild_all(rope);
         layout
+    }
+
+    pub fn stats(&self) -> LayoutStats {
+        LayoutStats {
+            rows_live: self.lines.len(),
+            ..self.stats
+        }
     }
 
     /// Rebuild only the logical lines touched by an edit. `old_line_count`
@@ -150,6 +170,8 @@ impl Layout {
         for line in start_line..start_line + new_line_count {
             replacement.extend(build_line(rope, line, self.wrap_width, self.tab_width));
         }
+        self.stats.rows_built += replacement.len();
+        self.stats.cells_built += replacement.iter().map(|r| r.cells.len()).sum::<usize>();
         self.lines.splice(row_start..row_end, replacement);
         self.recompute_metadata(rope);
     }
@@ -261,6 +283,8 @@ impl Layout {
             self.lines
                 .extend(build_line(rope, line, self.wrap_width, self.tab_width));
         }
+        self.stats.rows_built += self.lines.len();
+        self.stats.cells_built += self.lines.iter().map(|r| r.cells.len()).sum::<usize>();
         self.recompute_metadata(rope);
     }
 

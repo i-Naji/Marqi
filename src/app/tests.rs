@@ -1125,3 +1125,35 @@ fn click_into_a_preview_table_lands_inside_the_table() {
         "click lands inside the table source, got line {line}"
     );
 }
+
+#[test]
+fn debug_counters_track_pipeline_activity() {
+    let mut a = app_with("# Title\n\nbody text\n\n- one\n- two\n");
+    let (_, cache, layout) = a.debug_stats();
+    assert!(cache.blocks_total > 0, "block partition ran on first view");
+    assert!(layout.rows_live > 0, "layout holds the document's rows");
+    assert!(
+        layout.rows_built >= layout.rows_live && layout.cells_built > 0,
+        "construction counters accumulate"
+    );
+
+    let hits_before = cache.block_hits;
+    press(&mut a, KeyCode::Char('x'));
+    a.scroll_to_cursor();
+    let (_, cache, _) = a.debug_stats();
+    assert!(
+        cache.block_hits > hits_before,
+        "rebuilding after an edit re-fetches the unchanged inactive blocks"
+    );
+
+    let line = a.stats_line();
+    assert!(
+        line.contains("blk") && line.contains("rows"),
+        "stats line formats counters: {line}"
+    );
+    let dump = a.stats_dump();
+    assert!(
+        dump.contains("layout:") && dump.contains("view:"),
+        "exit dump covers each subsystem: {dump}"
+    );
+}

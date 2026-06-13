@@ -187,6 +187,11 @@ fn build_status(app: &App, width: usize) -> Line<'static> {
             (hints, status.add_modifier(Modifier::DIM))
         }
     };
+    let right = if crate::app::stats_enabled() {
+        format!("{} · {right}", app.stats_line())
+    } else {
+        right
+    };
 
     let left_width = display_width(&badge) + display_width(&name) + display_width(flag);
     if left_width > width {

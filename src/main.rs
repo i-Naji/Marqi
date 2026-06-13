@@ -102,6 +102,9 @@ fn run_editor(path: Option<String>, config_path: Option<PathBuf>) -> Result<()> 
     // Restore the terminal even if the run loop errored. A run-loop error is
     // the more informative of the two, so report it first.
     let restored = tui::restore();
+    if app::stats_enabled() {
+        eprintln!("{}", app.stats_dump());
+    }
     result.and(restored)
 }
 

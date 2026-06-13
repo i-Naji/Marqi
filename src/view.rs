@@ -14,6 +14,7 @@
 
 use std::collections::HashMap;
 use std::hash::{DefaultHasher, Hash, Hasher};
+use std::time::Instant;
 
 use comrak::nodes::{AstNode, NodeValue};
 use comrak::{Arena, parse_document};
@@ -65,6 +66,14 @@ pub struct ViewCache {
 pub struct ViewCacheStats {
     pub block_hits: usize,
     pub block_renders: usize,
+    /// Blocks in the current partition (snapshot, not cumulative).
+    pub blocks_total: usize,
+    /// Bytes currently held by the rendered-block cache (snapshot).
+    pub rendered_bytes: usize,
+    /// Times the rendered-block cache was cleared for exceeding its budget.
+    pub cache_clears: usize,
+    /// Duration of the last whole-document block partition (`blocks_from_ast`).
+    pub last_parse_us: u128,
 }
 
 #[derive(Clone)]
@@ -82,16 +91,21 @@ struct CachedBlock {
 }
 
 impl ViewCache {
-    #[cfg(test)]
     pub fn stats(&self) -> ViewCacheStats {
-        self.stats
+        ViewCacheStats {
+            blocks_total: self.blocks.len(),
+            rendered_bytes: self.rendered_bytes,
+            ..self.stats
+        }
     }
 
     fn ensure_blocks(&mut self, rope: &Rope, version: u64) {
         if self.version == Some(version) {
             return;
         }
+        let started = Instant::now();
         (self.blocks, self.ref_defs) = blocks_from_ast(rope);
+        self.stats.last_parse_us = started.elapsed().as_micros();
         self.version = Some(version);
     }
 
@@ -120,6 +134,7 @@ impl ViewCache {
         if self.rendered_bytes + bytes > RENDER_CACHE_LIMIT_BYTES {
             self.rendered.clear();
             self.rendered_bytes = 0;
+            self.stats.cache_clears += 1;
         }
         self.rendered_bytes += bytes;
         self.rendered.insert(
