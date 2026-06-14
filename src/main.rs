@@ -12,6 +12,8 @@ mod cursor;
 mod history;
 mod layout;
 mod markdown;
+#[cfg(test)]
+mod testdoc;
 mod text;
 mod tui;
 mod ui;
