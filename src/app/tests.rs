@@ -383,10 +383,10 @@ fn cross_block_selection_full_flow() {
         "selection should span into the second block, got {sel:?}"
     );
 
-    // The built view must highlight more than one row.
+    // The assembled view must highlight more than one row.
     a.set_viewport(20, 10);
-    let highlighted = a
-        .view()
+    let rows = a.all_rows();
+    let highlighted = rows
         .lines
         .iter()
         .filter(|l| {
@@ -653,8 +653,8 @@ fn raw_view_shows_source_with_markers() {
     press_mod(&mut a, KeyCode::Char('r'), KeyModifiers::CONTROL);
     assert!(a.raw_view(), "^R toggles raw view");
     a.set_viewport(40, 10);
-    let text: String = a
-        .view()
+    let rows = a.all_rows();
+    let text: String = rows
         .lines
         .iter()
         .map(|l| {
@@ -695,8 +695,8 @@ fn cursor_in_loose_list_gap_opens_only_the_blank() {
     let mut a = app_with("- a\n\n- c\n");
     a.cursor.byte = a.buffer.rope().line_to_byte(1); // the blank line
     a.set_viewport(30, 12);
-    let text: String = a
-        .view()
+    let rows = a.all_rows();
+    let text: String = rows
         .lines
         .iter()
         .map(|l| {
@@ -766,8 +766,8 @@ fn empty_checkbox_renders_as_a_glyph_in_preview() {
     let mut a = app_with("- [x] done\n- [ ]\n");
     a.cursor.byte = 0; // cursor on item 0, so item 1 is preview
     a.set_viewport(30, 10);
-    let rows: Vec<String> = a
-        .view()
+    let assembled = a.all_rows();
+    let rows: Vec<String> = assembled
         .lines
         .iter()
         .map(|l| l.spans.iter().map(|s| s.content.as_ref()).collect())
@@ -1127,6 +1127,106 @@ fn click_into_a_preview_table_lands_inside_the_table() {
 }
 
 #[test]
+fn edit_rerenders_only_the_dirty_block() {
+    let src = crate::testdoc::many_blocks(200);
+    let mut a = app_with(&src);
+    a.set_viewport(60, 20);
+    let _ = a.visible_rows();
+    let (_, before, _) = a.debug_stats();
+
+    // Jump to a mid-document paragraph and type: only the block the cursor
+    // left (now inactive, content unchanged but never rendered while active)
+    // may render — everything else is height- and cache-hits.
+    a.cursor.byte = src.find("Paragraph 25").unwrap();
+    press(&mut a, KeyCode::Char('z'));
+    a.scroll_to_cursor();
+    let _ = a.visible_rows();
+    let (_, after, _) = a.debug_stats();
+    assert!(
+        after.block_renders <= before.block_renders + 2,
+        "a one-block edit re-renders at most the blocks it touched: {} -> {}",
+        before.block_renders,
+        after.block_renders
+    );
+}
+
+#[test]
+fn cursor_jump_to_offscreen_line_scrolls_and_assembles() {
+    let src = crate::testdoc::many_blocks(120);
+    let mut a = app_with(&src);
+    a.set_viewport(40, 10);
+    let _ = a.visible_rows();
+
+    a.cursor.byte = src.find("# Heading 96").unwrap();
+    a.scroll_to_cursor();
+    let (_, row) = a.cursor_screen();
+    assert!(
+        row >= a.scroll_y && row < a.scroll_y + 10,
+        "cursor row {row} visible from scroll {}",
+        a.scroll_y
+    );
+    let rows = a.visible_rows();
+    let text: String = rows
+        .lines
+        .iter()
+        .map(|l| {
+            l.spans
+                .iter()
+                .map(|s| s.content.as_ref())
+                .collect::<String>()
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert!(
+        text.contains("# Heading 96"),
+        "the jumped-to block is in the assembled window:\n{text}"
+    );
+}
+
+#[test]
+fn gutter_numbers_stay_aligned_after_wheel_scroll() {
+    // One unwrapped paragraph: every row is raw, labels are exact layout lines.
+    let mut a = app_with(&crate::testdoc::ascii(200, 10));
+    a.set_viewport(40, 10);
+    for _ in 0..20 {
+        a.handle_mouse(mouse(MouseEventKind::ScrollDown, 0, 0));
+    }
+    assert_eq!(a.scroll_y, 60, "20 wheel steps of 3 rows");
+    let rows = a.visible_rows();
+    let expected: Vec<Option<usize>> = (61..71).map(Some).collect();
+    assert_eq!(
+        rows.numbers, expected,
+        "visible gutter labels match the scrolled-to source lines"
+    );
+}
+
+fn assert_matches_fresh_app(a: &mut App) {
+    let mut fresh = app_with(&a.buffer.rope().to_string());
+    fresh.set_viewport(50, 15);
+    fresh.cursor.byte = a.cursor.byte;
+    let ours = a.all_rows();
+    let theirs = fresh.all_rows();
+    assert_eq!(ours.lines, theirs.lines, "incremental rows == fresh rows");
+    assert_eq!(ours.numbers, theirs.numbers, "incremental labels == fresh");
+}
+
+#[test]
+fn incremental_view_matches_a_fresh_app_after_edits_and_undo() {
+    let src = crate::testdoc::many_blocks(30);
+    let mut a = app_with(&src);
+    a.set_viewport(50, 15);
+    a.cursor.byte = src.find("Paragraph 25").unwrap();
+    type_str(&mut a, "intro ");
+    press(&mut a, KeyCode::Enter);
+    type_str(&mut a, "- new item");
+    press(&mut a, KeyCode::Enter);
+    assert_matches_fresh_app(&mut a);
+
+    press_mod(&mut a, KeyCode::Char('z'), KeyModifiers::CONTROL);
+    assert_matches_fresh_app(&mut a);
+}
+
+#[test]
 fn debug_counters_track_pipeline_activity() {
     let mut a = app_with("# Title\n\nbody text\n\n- one\n- two\n");
     let (_, cache, layout) = a.debug_stats();
@@ -1141,9 +1241,15 @@ fn debug_counters_track_pipeline_activity() {
     press(&mut a, KeyCode::Char('x'));
     a.scroll_to_cursor();
     let (_, cache, _) = a.debug_stats();
+    assert_eq!(
+        cache.block_hits, hits_before,
+        "an edit alone fetches no rendered blocks (heights cover the index)"
+    );
+    let _ = a.visible_rows();
+    let (_, cache, _) = a.debug_stats();
     assert!(
         cache.block_hits > hits_before,
-        "rebuilding after an edit re-fetches the unchanged inactive blocks"
+        "assembling the viewport fetches the visible blocks from cache"
     );
 
     let line = a.stats_line();

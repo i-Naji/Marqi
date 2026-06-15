@@ -93,13 +93,15 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
         } else {
             app.clamp_scroll();
         }
+        let assembled = app.visible_rows();
         frame.render_widget(
-            Paragraph::new(window(&app.view().lines, app.scroll_y, height)).style(app.theme().text),
+            Paragraph::new(assembled.lines).style(app.theme().text),
             content_area,
         );
         if let Some(gutter_area) = gutter_area {
             frame.render_widget(
-                Paragraph::new(gutter_lines(app, gutter_width, height)).style(app.theme().gutter),
+                Paragraph::new(gutter_lines(app, &assembled.numbers, gutter_width, height))
+                    .style(app.theme().gutter),
                 gutter_area,
             );
         }
@@ -245,11 +247,16 @@ fn gutter_width(app: &App, editor_width: usize) -> usize {
     (digits + 1).min(editor_width.saturating_sub(1))
 }
 
-fn gutter_lines(app: &App, width: usize, height: usize) -> Vec<Line<'static>> {
+fn gutter_lines(
+    app: &App,
+    numbers: &[Option<usize>],
+    width: usize,
+    height: usize,
+) -> Vec<Line<'static>> {
     let current = app.cursor_line_col().0;
     let mut out = Vec::with_capacity(height);
-    for row in app.scroll_y..app.scroll_y + height {
-        let num = app.view().line_numbers.get(row).and_then(|n| *n);
+    for row in 0..height {
+        let num = numbers.get(row).copied().flatten();
         let text = num
             .map(|line| match app.line_numbers() {
                 LineNumbers::Absolute => line,
@@ -505,7 +512,8 @@ mod tests {
 
         let width = gutter_width(&app, 20);
         assert_eq!(width, 2);
-        let lines = gutter_lines(&app, width, 2);
+        let assembled = app.visible_rows();
+        let lines = gutter_lines(&app, &assembled.numbers, width, 2);
         let first: String = lines[0].spans.iter().map(|s| s.content.as_ref()).collect();
         assert_eq!(first, "1 ");
     }

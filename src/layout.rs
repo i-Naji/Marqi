@@ -181,8 +181,33 @@ impl Layout {
         self.lines.len()
     }
 
+    /// Every display row. Test-only: the live pipeline goes through
+    /// [`Layout::with_row`]/[`Layout::for_each_row`] so rows can later be
+    /// materialized on demand instead of stored.
+    #[cfg(test)]
     pub fn rows(&self) -> &[DisplayLine] {
         &self.lines
+    }
+
+    /// Visit one display row. Callback-style (rather than returning a
+    /// reference) so a lazily-materializing layout can serve rows from an
+    /// internal cache without leaking borrows.
+    pub fn with_row<T>(&self, row: usize, f: impl FnOnce(&DisplayLine) -> T) -> T {
+        let row = row.min(self.lines.len().saturating_sub(1));
+        f(&self.lines[row])
+    }
+
+    /// Visit a contiguous range of display rows in order, passing each row's
+    /// global index. The range is clamped to the document.
+    pub fn for_each_row(
+        &self,
+        rows: std::ops::Range<usize>,
+        mut f: impl FnMut(usize, &DisplayLine),
+    ) {
+        let end = rows.end.min(self.lines.len());
+        for row in rows.start.min(end)..end {
+            f(row, &self.lines[row]);
+        }
     }
 
     /// First display row of a logical source line. A line at or past the end

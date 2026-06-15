@@ -126,6 +126,8 @@ pub struct DebugTimings {
     pub last_parse_us: u128,
     /// Last hybrid/raw/preview structure build.
     pub last_view_build_us: u128,
+    /// Last viewport assembly (rendering the visible window's rows).
+    pub last_assemble_us: u128,
 }
 
 /// Whether `MARQI_STATS` debug counters should be displayed (status-bar
@@ -206,14 +208,13 @@ pub struct App {
     preview_width: usize,
     preview_dirty: bool,
 
-    // Cached hybrid (focus-mode) view and the inputs it was built for.
+    // Cached hybrid (focus-mode) row index and the inputs it was built for.
+    // Selection and cursor styling are assembly inputs, not build inputs, so
+    // they are deliberately absent here.
     view: Option<HybridView>,
     view_cache: ViewCache,
     view_version: u64,
     view_width: usize,
-    view_selection: Option<(usize, usize)>,
-    /// Cursor line the raw view was built for (its active-line highlight).
-    view_cursor_line: usize,
 
     /// Most recent pipeline timings (see [`DebugTimings`]).
     timings: DebugTimings,
@@ -266,8 +267,6 @@ impl App {
             view_cache: ViewCache::default(),
             view_version: 0,
             view_width: 0,
-            view_selection: None,
-            view_cursor_line: usize::MAX,
             timings: DebugTimings::default(),
         }
     }
@@ -391,10 +390,11 @@ impl App {
         let ms = |us: u128| us as f64 / 1000.0;
         let (timings, cache, layout) = self.debug_stats();
         format!(
-            "lay {:.1} prs {:.1} view {:.1}ms · blk {} hit {} ren {} · {}KB · rows {}",
+            "lay {:.1} prs {:.1} view {:.1} asm {:.1}ms · blk {} hit {} ren {} · {}KB · rows {}",
             ms(timings.last_layout_us),
             ms(timings.last_parse_us),
             ms(timings.last_view_build_us),
+            ms(timings.last_assemble_us),
             cache.blocks_total,
             cache.block_hits,
             cache.block_renders,
@@ -411,7 +411,7 @@ impl App {
             "marqi stats\n\
              \x20 layout: {} rows live · {} rows / {} cells built · last build {:.1}ms\n\
              \x20 parse:  {} blocks · last partition {:.1}ms\n\
-             \x20 view:   last build {:.1}ms · {} hits · {} renders · {} clears · {}KB cached",
+             \x20 view:   last build {:.1}ms · last assemble {:.1}ms · {} hits · {} renders · {} clears · {}KB cached",
             layout.rows_live,
             layout.rows_built,
             layout.cells_built,
@@ -419,6 +419,7 @@ impl App {
             cache.blocks_total,
             ms(timings.last_parse_us),
             ms(timings.last_view_build_us),
+            ms(timings.last_assemble_us),
             cache.block_hits,
             cache.block_renders,
             cache.cache_clears,
@@ -981,7 +982,7 @@ impl App {
         } else {
             self.ensure_view();
             self.follow_cursor = false;
-            self.view().lines.len()
+            self.view().total_rows()
         }
         .saturating_sub(self.viewport_height.max(1));
         self.scroll_y = self.scroll_y.saturating_add_signed(delta).min(max);
@@ -1035,8 +1036,8 @@ impl App {
         }
         self.ensure_layout();
         self.ensure_view();
-        let view = self.view();
-        let row = (self.scroll_y + y as usize).min(view.lines.len().saturating_sub(1));
+        let view = self.view.as_ref().expect("view built before mouse mapping");
+        let row = (self.scroll_y + y as usize).min(view.total_rows().saturating_sub(1));
         let col = (x as usize).saturating_sub(self.left_offset) as u16;
 
         // Rows inside the active raw run map 1:1 onto layout rows.
@@ -1049,38 +1050,29 @@ impl App {
             return Some(self.layout.pos_to_byte(layout_row, col));
         }
 
-        // Elsewhere preview rows carry a source line number where the renderer
-        // knows one exactly (list items, table grid rows, headings); chrome
-        // rows (table borders) and wrapped continuations do not. Estimate from
-        // the nearest labeled row above plus the row distance — exact for the
-        // labeled rows themselves, and close elsewhere (the click opens the
-        // block as raw source, where mapping is exact).
-        let Some((base_row, base_line)) = (0..=row)
-            .rev()
-            .find_map(|r| view.line_numbers.get(r).copied().flatten().map(|l| (r, l)))
-        else {
-            // Nothing labeled at or above (e.g. the top border of a table that
-            // opens the document): estimate back from the first labeled row
-            // below instead.
-            let (below_row, below_line) = (row + 1..view.line_numbers.len())
-                .find_map(|r| view.line_numbers.get(r).copied().flatten().map(|l| (r, l)))?;
-            let line = (below_line + row).saturating_sub(below_row).max(1);
-            let total = self.buffer.rope().len_lines();
-            let line0 = line.saturating_sub(1).min(total.saturating_sub(1));
-            let layout_row = self.layout.first_row_of_line(line0);
-            return Some(self.layout.pos_to_byte(layout_row, col));
+        // Elsewhere the row resolves within its segment: raw runs map exactly
+        // onto layout rows; preview rows carry a source line number where the
+        // renderer knows one exactly (list items, table grid rows, headings),
+        // and chrome rows (table borders, wrapped continuations) estimate from
+        // the nearest label in the same block — close enough, since the click
+        // immediately opens that block as raw source where mapping is exact.
+        let target = view::row_target(
+            self.view.as_ref().expect("view built before mouse mapping"),
+            &mut self.view_cache,
+            self.buffer.rope(),
+            self.wrap_width,
+            &self.theme,
+            &self.highlighter,
+            row,
+        )?;
+        let layout_row = match target {
+            view::RowTarget::LayoutRow(layout_row) => layout_row,
+            view::RowTarget::SourceLine(line0) => {
+                let total = self.buffer.rope().len_lines();
+                self.layout
+                    .first_row_of_line(line0.min(total.saturating_sub(1)))
+            }
         };
-        let mut line = base_line + (row - base_row); // 1-based
-        // The next labeled row bounds the estimate: the clicked row's source
-        // line cannot reach it.
-        if let Some(next) = (row + 1..view.line_numbers.len())
-            .find_map(|r| view.line_numbers.get(r).copied().flatten())
-        {
-            line = line.min(next.saturating_sub(1)).max(base_line);
-        }
-        let total = self.buffer.rope().len_lines();
-        let line0 = line.saturating_sub(1).min(total.saturating_sub(1));
-        let layout_row = self.layout.first_row_of_line(line0);
         Some(self.layout.pos_to_byte(layout_row, col))
     }
 
@@ -1436,32 +1428,27 @@ impl App {
         }
     }
 
-    /// Rebuild the hybrid view if the content/width changed, or the cursor
-    /// crossed into a different block (which changes what renders raw).
+    /// Rebuild the hybrid row index if the content/width changed, or the
+    /// cursor left the active region (which changes what renders raw).
+    /// Selection and cursor-line styling are applied at assembly time, so
+    /// neither invalidates the structure.
     fn ensure_view(&mut self) {
         if self.raw_view {
             return self.ensure_raw_view();
         }
         let cursor_line = self.buffer.rope().byte_to_line(self.cursor.byte);
-        let selection = self.selection_range();
-        // The cursor's *line* matters, not just its block: the view bakes the
-        // active-line background into the raw rows, so moving to another line
-        // of the same block must rebuild or the highlight goes stale.
         let still_valid = self.view.as_ref().is_some_and(|v| {
             self.view_version == self.version
                 && self.view_width == self.wrap_width
-                && self.view_selection == selection
-                && self.view_cursor_line == cursor_line
                 && (v.active_lines.0..=v.active_lines.1).contains(&cursor_line)
         });
         if !still_valid {
             let started = Instant::now();
-            self.view = Some(view::build_cached(
+            self.view = Some(view::build_index(
                 &mut self.view_cache,
                 self.buffer.rope(),
                 &self.layout,
                 self.cursor.byte,
-                selection,
                 self.wrap_width,
                 &self.theme,
                 &self.highlighter,
@@ -1470,36 +1457,61 @@ impl App {
             self.timings.last_view_build_us = started.elapsed().as_micros();
             self.view_version = self.version;
             self.view_width = self.wrap_width;
-            self.view_selection = selection;
-            self.view_cursor_line = cursor_line;
         }
     }
 
-    /// Rebuild the raw (highlighted source) view if the content, width,
-    /// selection, or cursor line changed.
+    /// Rebuild the raw (highlighted source) row index if the content or width
+    /// changed. Cursor and selection are assembly inputs.
     fn ensure_raw_view(&mut self) {
-        let cursor_line = self.buffer.rope().byte_to_line(self.cursor.byte);
-        let selection = self.selection_range();
         let still_valid = self.view.is_some()
             && self.view_version == self.version
-            && self.view_width == self.wrap_width
-            && self.view_selection == selection
-            && self.view_cursor_line == cursor_line;
+            && self.view_width == self.wrap_width;
         if !still_valid {
             let started = Instant::now();
-            self.view = Some(view::build_raw(
-                self.buffer.rope(),
-                &self.layout,
-                self.cursor.byte,
-                selection,
-                &self.theme,
-            ));
+            self.view = Some(view::build_raw_index(self.buffer.rope(), &self.layout));
             self.timings.last_view_build_us = started.elapsed().as_micros();
             self.view_version = self.version;
             self.view_width = self.wrap_width;
-            self.view_selection = selection;
-            self.view_cursor_line = cursor_line;
         }
+    }
+
+    /// Render the rows currently in the viewport (plus gutter labels). The
+    /// only place hybrid/raw rows are rendered — cost is O(viewport), not
+    /// O(document).
+    pub fn visible_rows(&mut self) -> view::Assembled {
+        self.ensure_layout();
+        self.ensure_view();
+        let started = Instant::now();
+        let out = self.assemble_rows(self.scroll_y, self.viewport_height.max(1));
+        self.timings.last_assemble_us = started.elapsed().as_micros();
+        out
+    }
+
+    /// Assemble every rendered row — the old full-document view, for tests.
+    #[cfg(test)]
+    pub fn all_rows(&mut self) -> view::Assembled {
+        self.ensure_layout();
+        self.ensure_view();
+        let total = self.view().total_rows();
+        self.assemble_rows(0, total)
+    }
+
+    fn assemble_rows(&mut self, start: usize, count: usize) -> view::Assembled {
+        let cursor_line = self.buffer.rope().byte_to_line(self.cursor.byte);
+        let selection = self.selection_range();
+        view::assemble(
+            self.view.as_mut().expect("view built before assembly"),
+            &mut self.view_cache,
+            self.buffer.rope(),
+            &self.layout,
+            cursor_line,
+            selection,
+            self.wrap_width,
+            &self.theme,
+            &self.highlighter,
+            start,
+            count,
+        )
     }
 
     /// Scroll the hybrid view so the cursor stays visible with a scrolloff
@@ -1507,7 +1519,7 @@ impl App {
     pub fn scroll_to_cursor(&mut self) {
         self.ensure_view();
         let (_, row) = self.cursor_screen();
-        let total = self.view().lines.len();
+        let total = self.view().total_rows();
         let height = self.viewport_height.max(1);
         let margin = self.scrolloff.min(height.saturating_sub(1) / 2);
 
@@ -1529,8 +1541,7 @@ impl App {
         self.ensure_view();
         let max = self
             .view()
-            .lines
-            .len()
+            .total_rows()
             .saturating_sub(self.viewport_height.max(1));
         self.scroll_y = self.scroll_y.min(max);
     }
