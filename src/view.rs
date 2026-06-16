@@ -288,6 +288,187 @@ impl ViewCache {
     }
 }
 
+/// The read-mode preview as a row index: blocks and definition-gap runs in
+/// document order, with the blank separator rows modeled explicitly so the
+/// row math mirrors the legacy emit loop structurally.
+pub struct PreviewView {
+    segments: Vec<PreviewSegment>,
+    /// `row_starts[i]` = first global row of `segments[i]`; last = total.
+    row_starts: Vec<usize>,
+}
+
+enum PreviewSegment {
+    /// Exactly one blank row between emitting units.
+    Separator,
+    /// A gap's non-blank run (link reference definitions), one row per source
+    /// line starting at `first_line` — interior blank lines included. The run
+    /// length lives in the row index.
+    GapDefs { first_line: usize },
+    /// A block: preview rows from the cache, or its tokenized source when the
+    /// isolated re-parse renders blank (one row per source line).
+    Block { block: SourceBlock, blank: bool },
+}
+
+impl PreviewView {
+    pub fn total_rows(&self) -> usize {
+        self.row_starts.last().copied().unwrap_or(0)
+    }
+
+    fn locate(&self, row: usize) -> Option<(usize, usize)> {
+        if self.segments.is_empty() {
+            return None;
+        }
+        let seg = self
+            .row_starts
+            .partition_point(|start| *start <= row)
+            .saturating_sub(1)
+            .min(self.segments.len() - 1);
+        Some((seg, row - self.row_starts[seg]))
+    }
+
+    fn push(&mut self, segment: PreviewSegment, rows: usize) {
+        self.row_starts.push(self.total_rows() + rows);
+        self.segments.push(segment);
+    }
+}
+
+/// Build the read-mode row index. Mirrors the legacy emit loop: each emitting
+/// unit (definition gap, block) after the first gets one leading separator —
+/// including adjacent blocks with no blank source line between them.
+pub fn build_preview_index(
+    cache: &mut ViewCache,
+    rope: &Rope,
+    width: usize,
+    theme: &MarkdownTheme,
+    highlighter: &CodeHighlighter,
+    version: u64,
+) -> PreviewView {
+    cache.ensure_blocks(rope, version);
+    let width = width.max(1);
+    let total = rope.len_lines();
+    let mut view = PreviewView {
+        segments: Vec::new(),
+        row_starts: vec![0],
+    };
+    let blocks = cache.blocks.clone();
+    let mut next_line = 0usize;
+    let mut emitted = false;
+    for block in &blocks {
+        if let Some((first, last)) = gap_content_range(rope, next_line, block.start_line) {
+            if emitted {
+                view.push(PreviewSegment::Separator, 1);
+            }
+            view.push(
+                PreviewSegment::GapDefs { first_line: first },
+                last - first + 1,
+            );
+            emitted = true;
+        }
+        if emitted {
+            view.push(PreviewSegment::Separator, 1);
+        }
+        let height = cache.block_height(rope, block, width, theme, highlighter);
+        let rows = if height.blank {
+            // Tokenized-source fallback: one row per source line.
+            block.end_line - block.start_line + 1
+        } else {
+            height.rows as usize
+        };
+        view.push(
+            PreviewSegment::Block {
+                block: block.clone(),
+                blank: height.blank,
+            },
+            rows,
+        );
+        emitted = true;
+        next_line = block.end_line + 1;
+    }
+    if let Some((first, last)) = gap_content_range(rope, next_line, total) {
+        if emitted {
+            view.push(PreviewSegment::Separator, 1);
+        }
+        view.push(
+            PreviewSegment::GapDefs { first_line: first },
+            last - first + 1,
+        );
+    }
+    if view.total_rows() == 0 {
+        // An all-blank document still shows one (blank) row.
+        view.push(PreviewSegment::Separator, 1);
+    }
+    view
+}
+
+/// The non-blank run `[first, last]` (absolute lines) of a gap, if any — the
+/// lines the legacy `push_gap_defs` would emit.
+fn gap_content_range(rope: &Rope, from: usize, to_exclusive: usize) -> Option<(usize, usize)> {
+    let blank = |l: usize| rope.line(l).chars().all(char::is_whitespace);
+    let first = (from..to_exclusive).find(|&l| !blank(l))?;
+    let last = (from..to_exclusive).rev().find(|&l| !blank(l))?;
+    Some((first, last))
+}
+
+/// Render rows `[start_row, start_row + count)` of the read-mode preview.
+#[allow(clippy::too_many_arguments)]
+pub fn assemble_preview(
+    view: &PreviewView,
+    cache: &mut ViewCache,
+    rope: &Rope,
+    width: usize,
+    theme: &MarkdownTheme,
+    highlighter: &CodeHighlighter,
+    start_row: usize,
+    count: usize,
+) -> Vec<Line<'static>> {
+    let width = width.max(1);
+    let total = view.total_rows();
+    let start = start_row.min(total);
+    let end = (start + count).min(total);
+    let mut out = Vec::with_capacity(end - start);
+
+    let mut row = start;
+    while row < end {
+        let Some((seg, offset)) = view.locate(row) else {
+            break;
+        };
+        let seg_rows = view.row_starts[seg + 1] - view.row_starts[seg];
+        let take = (end - row).min(seg_rows - offset);
+        match &view.segments[seg] {
+            PreviewSegment::Separator => out.push(Line::default()),
+            PreviewSegment::GapDefs { first_line } => {
+                for r in offset..offset + take {
+                    let text = rope.line(first_line + r).to_string();
+                    out.extend(tokenized_source_lines(&text, theme));
+                }
+            }
+            PreviewSegment::Block { block, blank } => {
+                if *blank {
+                    // The isolated re-parse consumed the whole block (e.g. a
+                    // footnote definition whose reference lives in another
+                    // block): show its tokenized source rather than a blank
+                    // hole.
+                    let source = source_slice(rope, block.start_byte, block.end_byte);
+                    out.extend(
+                        tokenized_source_lines(&source, theme)
+                            .into_iter()
+                            .skip(offset)
+                            .take(take),
+                    );
+                } else {
+                    let (block_lines, _) =
+                        cache.cached_block(rope, block, width, theme, highlighter);
+                    out.extend(block_lines.into_iter().skip(offset).take(take));
+                }
+            }
+        }
+        row += take;
+    }
+    out
+}
+
+/// Legacy full-document read preview (test oracle for the preview index).
+#[cfg(test)]
 pub fn render_preview_cached(
     cache: &mut ViewCache,
     rope: &Rope,
@@ -331,6 +512,7 @@ pub fn render_preview_cached(
 /// hiding them entirely — as a website renderer would — reads as data loss in
 /// an editor. Leading/trailing blank lines collapse into the usual separator;
 /// interior structure is kept.
+#[cfg(test)]
 fn push_gap_defs(
     rope: &Rope,
     from: usize,
@@ -2196,6 +2378,59 @@ mod tests {
                     assert_eq!(ours.lines, oracle.lines, "rows ({context})");
                     assert_eq!(ours.numbers, oracle.line_numbers, "labels ({context})");
                 }
+            }
+        }
+    }
+
+    /// Read-mode parity: the preview index assembled in full must be
+    /// byte-identical to the legacy whole-document preview, across every
+    /// separator/gap shape the emit loop distinguishes.
+    #[test]
+    fn assembled_preview_matches_the_legacy_preview() {
+        use crate::testdoc;
+
+        let docs = [
+            testdoc::many_blocks(30),
+            // Leading gap with definitions before the first block.
+            "[lead]: https://example.com\n\nA [link][lead].\n".to_string(),
+            // Trailing gap with definitions after the last block.
+            "A [link][tail].\n\n[tail]: https://example.com\n".to_string(),
+            // Adjacent blocks with no blank line between them.
+            "# Heading\nparagraph right below\n".to_string(),
+            // A gap whose definition run contains interior blank lines.
+            "para\n\n[a]: /one\n\n[b]: /two\n\npara two\n".to_string(),
+            // A footnote definition consumed by the isolated re-parse.
+            "Uses a note[^n].\n\n[^n]: the definition body\n".to_string(),
+            // Blank-only and empty documents.
+            "\n\n\n".to_string(),
+            String::new(),
+            testdoc::cjk_emoji(6),
+            testdoc::tabs_and_wrap(6),
+        ];
+        let theme = MarkdownTheme::default();
+        let hl = CodeHighlighter::new(None);
+        for (doc_idx, src) in docs.iter().enumerate() {
+            let rope = Rope::from_str(src);
+            let oracle = {
+                let mut cache = ViewCache::default();
+                render_preview_cached(&mut cache, &rope, 40, &theme, &hl, 0)
+            };
+            let mut cache = ViewCache::default();
+            let view = build_preview_index(&mut cache, &rope, 40, &theme, &hl, 0);
+            let total = view.total_rows();
+            let ours = assemble_preview(&view, &mut cache, &rope, 40, &theme, &hl, 0, total);
+            assert_eq!(
+                total,
+                oracle.len(),
+                "row totals (doc {doc_idx}): index vs legacy"
+            );
+            for (row, (a, b)) in ours.iter().zip(&oracle).enumerate() {
+                assert_eq!(a, b, "row {row} (doc {doc_idx})");
+            }
+            // Windowed assembly slices the same rows.
+            if total > 4 {
+                let window = assemble_preview(&view, &mut cache, &rope, 40, &theme, &hl, 2, 3);
+                assert_eq!(window.as_slice(), &oracle[2..5], "window (doc {doc_idx})");
             }
         }
     }

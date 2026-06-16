@@ -9,7 +9,6 @@
 use std::time::{Duration, Instant};
 
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
-use ratatui::text::Line;
 
 use crate::buffer::TextBuffer;
 use crate::clipboard::Clipboard;
@@ -19,7 +18,7 @@ use crate::history::{Edit, History};
 use crate::layout::Layout;
 use crate::markdown::{CodeHighlighter, MarkdownTheme};
 use crate::text::{next_grapheme, prev_grapheme};
-use crate::view::{self, HybridView, ViewCache};
+use crate::view::{self, HybridView, PreviewView, ViewCache};
 
 mod prompt;
 mod search;
@@ -201,10 +200,11 @@ pub struct App {
     // Monotonic content version, bumped on every edit.
     version: u64,
 
-    // Markdown rendering: shared theme + highlighter and a cached preview.
+    // Markdown rendering: shared theme + highlighter and the cached read-mode
+    // row index.
     theme: MarkdownTheme,
     highlighter: CodeHighlighter,
-    preview: Vec<Line<'static>>,
+    preview_view: Option<PreviewView>,
     preview_width: usize,
     preview_dirty: bool,
 
@@ -260,7 +260,7 @@ impl App {
             version: 0,
             theme: MarkdownTheme::default(),
             highlighter: CodeHighlighter::new(None),
-            preview: Vec::new(),
+            preview_view: None,
             preview_width: 0,
             preview_dirty: true,
             view: None,
@@ -324,10 +324,6 @@ impl App {
     }
 
     // --- accessors used by the UI layer ---
-
-    pub fn preview(&self) -> &[Line<'static>] {
-        &self.preview
-    }
 
     pub fn view(&self) -> &HybridView {
         self.view.as_ref().expect("view built before access")
@@ -636,8 +632,7 @@ impl App {
     fn scroll_preview(&mut self, key: KeyEvent) {
         let page = self.page_rows();
         let max = self
-            .preview
-            .len()
+            .preview_total_rows()
             .saturating_sub(self.viewport_height.max(1));
         let step = |y: usize, delta: isize| (y as isize + delta).clamp(0, max as isize) as usize;
         self.scroll_y = match key.code {
@@ -978,7 +973,7 @@ impl App {
             return;
         }
         let max = if self.mode.is_read() {
-            self.preview.len()
+            self.preview_total_rows()
         } else {
             self.ensure_view();
             self.follow_cursor = false;
@@ -1410,22 +1405,34 @@ impl App {
         }
     }
 
-    /// Rebuild the rendered preview if the content or width changed.
+    /// Rebuild the read-mode row index if the content or width changed.
     fn ensure_preview(&mut self) {
-        if self.preview_dirty || self.preview_width != self.wrap_width {
+        if self.preview_view.is_none()
+            || self.preview_dirty
+            || self.preview_width != self.wrap_width
+        {
             let started = Instant::now();
-            self.preview = view::render_preview_cached(
+            self.preview_view = Some(view::build_preview_index(
                 &mut self.view_cache,
                 self.buffer.rope(),
                 self.wrap_width,
                 &self.theme,
                 &self.highlighter,
                 self.version,
-            );
+            ));
             self.timings.last_view_build_us = started.elapsed().as_micros();
             self.preview_width = self.wrap_width;
             self.preview_dirty = false;
         }
+    }
+
+    /// Total rendered rows of the read-mode preview.
+    fn preview_total_rows(&mut self) -> usize {
+        self.ensure_preview();
+        self.preview_view
+            .as_ref()
+            .expect("preview built above")
+            .total_rows()
     }
 
     /// Rebuild the hybrid row index if the content/width changed, or the
@@ -1476,13 +1483,29 @@ impl App {
     }
 
     /// Render the rows currently in the viewport (plus gutter labels). The
-    /// only place hybrid/raw rows are rendered — cost is O(viewport), not
+    /// only place rendered rows are produced — cost is O(viewport), not
     /// O(document).
     pub fn visible_rows(&mut self) -> view::Assembled {
-        self.ensure_layout();
-        self.ensure_view();
         let started = Instant::now();
-        let out = self.assemble_rows(self.scroll_y, self.viewport_height.max(1));
+        let out = if self.mode.is_read() {
+            self.ensure_preview();
+            let lines = view::assemble_preview(
+                self.preview_view.as_ref().expect("preview built above"),
+                &mut self.view_cache,
+                self.buffer.rope(),
+                self.wrap_width,
+                &self.theme,
+                &self.highlighter,
+                self.scroll_y,
+                self.viewport_height.max(1),
+            );
+            let numbers = vec![None; lines.len()];
+            view::Assembled { lines, numbers }
+        } else {
+            self.ensure_layout();
+            self.ensure_view();
+            self.assemble_rows(self.scroll_y, self.viewport_height.max(1))
+        };
         self.timings.last_assemble_us = started.elapsed().as_micros();
         out
     }

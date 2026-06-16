@@ -82,7 +82,7 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
         );
     } else if app.mode.is_read() {
         frame.render_widget(
-            Paragraph::new(window(app.preview(), app.scroll_y, height)).style(app.theme().text),
+            Paragraph::new(app.visible_rows().lines).style(app.theme().text),
             content_area,
         );
     } else {
