@@ -144,6 +144,10 @@ pub struct ViewCache {
     /// links resolve across blocks; pure definitions render nothing, so the
     /// appendix never adds rows.
     ref_defs: String,
+    /// Hash of `ref_defs`, mixed into every block's cache key — a definition
+    /// change re-keys (and so re-renders) every block, exactly as appending
+    /// the defs to the hashed source used to.
+    ref_defs_hash: u64,
     version: Option<u64>,
     rendered: HashMap<u64, CachedBlock>,
     rendered_bytes: usize,
@@ -182,6 +186,9 @@ struct SourceBlock {
     end_line: usize,
     start_byte: usize,
     end_byte: usize,
+    /// Hash of the block's source slice, computed once at partition time so
+    /// per-build cache keys never re-slice or re-hash block text.
+    content_hash: u64,
 }
 
 struct CachedBlock {
@@ -205,6 +212,11 @@ impl ViewCache {
         }
         let started = Instant::now();
         (self.blocks, self.ref_defs) = blocks_from_ast(rope);
+        self.ref_defs_hash = {
+            let mut hasher = DefaultHasher::new();
+            self.ref_defs.hash(&mut hasher);
+            hasher.finish()
+        };
         self.stats.last_parse_us = started.elapsed().as_micros();
         self.version = Some(version);
     }
@@ -217,14 +229,15 @@ impl ViewCache {
         theme: &MarkdownTheme,
         highlighter: &CodeHighlighter,
     ) -> (Vec<Line<'static>>, Vec<Option<usize>>) {
-        let mut source = source_slice(rope, block.start_byte, block.end_byte);
-        append_ref_defs(&mut source, &self.ref_defs);
-        let key = block_cache_key(&source, width, theme.heading_glyphs, theme.hard_breaks);
+        let key = self.block_key(block, width, theme);
         if let Some(cached) = self.rendered.get(&key) {
             self.stats.block_hits += 1;
             return (cached.lines.clone(), cached.sources.clone());
         }
 
+        // Only a miss pays for slicing the source out of the rope.
+        let mut source = source_slice(rope, block.start_byte, block.end_byte);
+        append_ref_defs(&mut source, &self.ref_defs);
         let (lines, sources): (Vec<_>, Vec<_>) =
             render_preview_rows(&source, width, theme, highlighter)
                 .into_iter()
@@ -262,6 +275,18 @@ impl ViewCache {
         );
     }
 
+    /// Cache key for one block at the current width/theme — pure integer
+    /// hashing, no text access.
+    fn block_key(&self, block: &SourceBlock, width: usize, theme: &MarkdownTheme) -> u64 {
+        block_cache_key(
+            block.content_hash,
+            self.ref_defs_hash,
+            width,
+            theme.heading_glyphs,
+            theme.hard_breaks,
+        )
+    }
+
     /// Rendered height of a block, from the memo when possible; a miss renders
     /// the block once (populating the render cache too) and memoizes.
     fn block_height(
@@ -272,9 +297,7 @@ impl ViewCache {
         theme: &MarkdownTheme,
         highlighter: &CodeHighlighter,
     ) -> BlockHeight {
-        let mut source = source_slice(rope, block.start_byte, block.end_byte);
-        append_ref_defs(&mut source, &self.ref_defs);
-        let key = block_cache_key(&source, width, theme.heading_glyphs, theme.hard_breaks);
+        let key = self.block_key(block, width, theme);
         if let Some(height) = self.heights.get(&key) {
             return *height;
         }
@@ -1503,11 +1526,17 @@ fn blocks_from_ast(rope: &Rope) -> (Vec<SourceBlock>, String) {
         } else {
             rope.len_bytes()
         };
+        let content_hash = {
+            let mut hasher = DefaultHasher::new();
+            source[start_byte..end_byte].hash(&mut hasher);
+            hasher.finish()
+        };
         blocks.push(SourceBlock {
             start_line: start,
             end_line: end,
             start_byte,
             end_byte,
+            content_hash,
         });
     }
     (blocks, ref_defs_from_gaps(rope, &owner))
@@ -1576,16 +1605,25 @@ fn source_slice(rope: &Rope, start: usize, end: usize) -> String {
         .to_string()
 }
 
-/// Cache key for a rendered preview block.
+/// Cache key for a rendered preview block: the block's content hash plus the
+/// document's ref-defs hash (a definition change re-keys everything) and the
+/// render inputs.
 ///
 /// Validity assumes the `theme` colours (beyond `heading_glyphs`) and the
 /// `CodeHighlighter` are immutable for the cache's lifetime: `App` sets both
 /// once in `with_config` and never mutates them, and `ViewCache` is not reset on
 /// a theme change. If runtime theme/syntax switching is added, mix a
 /// theme/highlighter version into this key, or clear `ViewCache` on replacement.
-fn block_cache_key(source: &str, width: usize, heading_glyphs: bool, hard_breaks: bool) -> u64 {
+fn block_cache_key(
+    content_hash: u64,
+    ref_defs_hash: u64,
+    width: usize,
+    heading_glyphs: bool,
+    hard_breaks: bool,
+) -> u64 {
     let mut hasher = DefaultHasher::new();
-    source.hash(&mut hasher);
+    content_hash.hash(&mut hasher);
+    ref_defs_hash.hash(&mut hasher);
     width.hash(&mut hasher);
     heading_glyphs.hash(&mut hasher);
     hard_breaks.hash(&mut hasher);

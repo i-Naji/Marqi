@@ -1226,6 +1226,69 @@ fn incremental_view_matches_a_fresh_app_after_edits_and_undo() {
     assert_matches_fresh_app(&mut a);
 }
 
+/// Manual perf probe, not a CI test:
+/// `cargo test --release perf_probe -- --ignored --nocapture`
+#[test]
+#[ignore = "manual perf probe; run with --release --ignored --nocapture"]
+fn perf_probe_keystroke_and_scroll() {
+    let src = crate::testdoc::many_blocks(12_000);
+    let mut a = app_with(&src);
+    a.set_viewport(100, 40);
+
+    let t = std::time::Instant::now();
+    let _ = a.visible_rows();
+    eprintln!(
+        "doc {} KB, {} lines · first build+assemble {:?}",
+        src.len() / 1024,
+        a.buffer.rope().len_lines(),
+        t.elapsed()
+    );
+
+    a.cursor.byte = src.find("Paragraph 6001").expect("mid-doc paragraph");
+    a.scroll_to_cursor();
+    let _ = a.visible_rows();
+
+    let t = std::time::Instant::now();
+    for _ in 0..20 {
+        press(&mut a, KeyCode::Char('x'));
+        a.scroll_to_cursor();
+        let _ = a.visible_rows();
+    }
+    eprintln!("keystroke (edit+index+assemble) avg {:?}", t.elapsed() / 20);
+
+    let t = std::time::Instant::now();
+    for _ in 0..40 {
+        press(&mut a, KeyCode::Down);
+        a.scroll_to_cursor();
+        let _ = a.visible_rows();
+    }
+    eprintln!("cursor-line move avg {:?}", t.elapsed() / 40);
+
+    let t = std::time::Instant::now();
+    for _ in 0..40 {
+        a.handle_mouse(mouse(MouseEventKind::ScrollDown, 0, 0));
+        let _ = a.visible_rows();
+    }
+    eprintln!("wheel step avg {:?}", t.elapsed() / 40);
+
+    let (timings, cache, layout) = a.debug_stats();
+    eprintln!(
+        "last: layout {}us · parse {}us · view build {}us · assemble {}us",
+        timings.last_layout_us,
+        timings.last_parse_us,
+        timings.last_view_build_us,
+        timings.last_assemble_us
+    );
+    eprintln!(
+        "cache: {} blocks, {} hits, {} renders, {} KB · layout rows live {}",
+        cache.blocks_total,
+        cache.block_hits,
+        cache.block_renders,
+        cache.rendered_bytes / 1024,
+        layout.rows_live
+    );
+}
+
 #[test]
 fn debug_counters_track_pipeline_activity() {
     let mut a = app_with("# Title\n\nbody text\n\n- one\n- two\n");
