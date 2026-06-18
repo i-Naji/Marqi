@@ -6,10 +6,19 @@
 //! Columns are *display* columns: CJK and most emoji are width 2, combining
 //! marks width 0, and tabs expand to the next tab stop. The newline itself is
 //! never a cell — a hard-ended row's `byte_end` is the cursor's "end of line".
+//!
+//! Row geometry is kept as **exact per-line row counts** with chunked prefix
+//! sums: row↔line lookups cost one chunk scan, and an edit recounts only the
+//! lines it touched (no full-document metadata rebuild per keystroke). Byte
+//! offsets come from an O(1) Arc-shared [`Rope`] snapshot instead of a
+//! per-line table.
 
 use ropey::Rope;
 use unicode_segmentation::UnicodeSegmentation;
 use unicode_width::UnicodeWidthStr;
+
+/// Lines per prefix-sum chunk: row lookups scan at most this many counts.
+const CHUNK: usize = 1024;
 
 /// One grapheme cluster as placed on screen.
 ///
@@ -83,8 +92,16 @@ pub struct LayoutStats {
 /// The document laid out into display rows for a given wrap width.
 pub struct Layout {
     lines: Vec<DisplayLine>,
-    line_first_rows: Vec<usize>,
-    line_starts: Vec<usize>,
+    /// Exact display rows per source line (always ≥ 1).
+    row_counts: Vec<u32>,
+    /// `chunk_prefix[c]` = total rows of chunks `[0, c)`; the last entry is
+    /// the document total.
+    chunk_prefix: Vec<usize>,
+    total_rows: usize,
+    /// O(1) Arc-shared snapshot of the laid-out text, replaced on every
+    /// build/update. Keeps byte↔position queries parameterless; staleness
+    /// follows exactly the same contract as the row data itself.
+    rope: Rope,
     wrap_width: usize,
     tab_width: usize,
     stats: LayoutStats,
@@ -93,14 +110,14 @@ pub struct Layout {
 impl Layout {
     /// Lay `rope` out, wrapping at `wrap_width` columns with `tab_width` tab stops.
     pub fn build(rope: &Rope, wrap_width: usize, tab_width: usize) -> Self {
-        let wrap_width = wrap_width.max(1);
-        let tab_width = tab_width.max(1);
         let mut layout = Self {
             lines: Vec::new(),
-            line_first_rows: Vec::new(),
-            line_starts: Vec::new(),
-            wrap_width,
-            tab_width,
+            row_counts: Vec::new(),
+            chunk_prefix: Vec::new(),
+            total_rows: 0,
+            rope: rope.clone(),
+            wrap_width: wrap_width.max(1),
+            tab_width: tab_width.max(1),
             stats: LayoutStats::default(),
         };
         layout.rebuild_all(rope);
@@ -136,13 +153,13 @@ impl Layout {
         }
 
         let total = rope.len_lines();
-        if total == 0 || self.line_first_rows.is_empty() {
+        if total == 0 || self.row_counts.is_empty() {
             self.rebuild_all(rope);
             return;
         }
 
         let start_line = start_line.min(total.saturating_sub(1));
-        let cached_lines = self.line_first_rows.len().saturating_sub(1);
+        let cached_lines = self.row_counts.len();
         let old_line_count = old_line_count
             .max(1)
             .min(cached_lines.saturating_sub(start_line).max(1));
@@ -150,16 +167,8 @@ impl Layout {
             .max(1)
             .min(total.saturating_sub(start_line).max(1));
 
-        let row_start = self
-            .line_first_rows
-            .get(start_line)
-            .copied()
-            .unwrap_or(self.lines.len());
-        let row_end = self
-            .line_first_rows
-            .get(start_line + old_line_count)
-            .copied()
-            .unwrap_or(self.lines.len());
+        let row_start = self.first_row_of_line(start_line);
+        let row_end = self.first_row_of_line(start_line + old_line_count);
 
         let line_delta = new_line_count as isize - old_line_count as isize;
         for row in &mut self.lines[row_end..] {
@@ -167,18 +176,26 @@ impl Layout {
         }
 
         let mut replacement = Vec::new();
+        let mut new_counts = Vec::with_capacity(new_line_count);
         for line in start_line..start_line + new_line_count {
-            replacement.extend(build_line(rope, line, self.wrap_width, self.tab_width));
+            let built = build_line(rope, line, self.wrap_width, self.tab_width);
+            new_counts.push(built.len() as u32);
+            replacement.extend(built);
         }
         self.stats.rows_built += replacement.len();
         self.stats.cells_built += replacement.iter().map(|r| r.cells.len()).sum::<usize>();
         self.lines.splice(row_start..row_end, replacement);
-        self.recompute_metadata(rope);
+        self.row_counts.splice(
+            start_line..(start_line + old_line_count).min(cached_lines),
+            new_counts,
+        );
+        self.rope = rope.clone();
+        self.recompute_chunks();
     }
 
     /// Number of display rows (always ≥ 1).
     pub fn len(&self) -> usize {
-        self.lines.len()
+        self.total_rows
     }
 
     /// Every display row. Test-only: the live pipeline goes through
@@ -213,34 +230,31 @@ impl Layout {
     /// First display row of a logical source line. A line at or past the end
     /// of the document maps to `len()`.
     pub fn first_row_of_line(&self, line: usize) -> usize {
-        self.line_first_rows
-            .get(line)
-            .copied()
-            .unwrap_or(self.lines.len())
+        if line >= self.row_counts.len() {
+            return self.total_rows;
+        }
+        let chunk = line / CHUNK;
+        let mut row = self.chunk_prefix[chunk];
+        for rows in &self.row_counts[chunk * CHUNK..line] {
+            row += *rows as usize;
+        }
+        row
     }
 
-    /// Absolute byte offset where a logical source line starts.
+    /// Absolute byte offset where a logical source line starts. Lines past the
+    /// end of the document map to the last line's start.
     pub fn line_start(&self, line: usize) -> usize {
-        self.line_starts
-            .get(line)
-            .copied()
-            .unwrap_or_else(|| self.line_starts.last().copied().unwrap_or(0))
+        let last = self.rope.len_lines().saturating_sub(1);
+        self.rope.line_to_byte(line.min(last))
     }
 
     /// Map a rope byte offset to its `(row, display_col)` on screen.
     pub fn byte_to_pos(&self, byte: usize) -> (usize, u16) {
-        let line = self
-            .line_starts
-            .partition_point(|start| *start <= byte)
-            .saturating_sub(1)
-            .min(self.line_starts.len().saturating_sub(1));
+        let byte = byte.min(self.rope.len_bytes());
+        let line = self.rope.byte_to_line(byte);
         let rel = byte.saturating_sub(self.line_start(line));
-        let row_start = self.line_first_rows.get(line).copied().unwrap_or(0);
-        let row_end = self
-            .line_first_rows
-            .get(line + 1)
-            .copied()
-            .unwrap_or(self.lines.len());
+        let row_start = self.first_row_of_line(line);
+        let row_end = self.first_row_of_line(line + 1);
         let mut r = row_start;
 
         while let Some(dl) = self.lines.get(r) {
@@ -254,7 +268,7 @@ impl Layout {
             }
             // End-of-line position only belongs to a hard-ended row; a
             // soft-wrap boundary is owned by the following row, which has the
-            // same byte_start and is selected by the partition lookup above.
+            // same byte_start and is selected by the lookup above.
             if rel == dl.byte_end && !dl.soft_wrapped {
                 return (r, dl.width);
             }
@@ -303,40 +317,36 @@ impl Layout {
     }
 
     fn rebuild_all(&mut self, rope: &Rope) {
+        self.rope = rope.clone();
         self.lines.clear();
+        self.row_counts.clear();
         for line in 0..rope.len_lines() {
-            self.lines
-                .extend(build_line(rope, line, self.wrap_width, self.tab_width));
+            let built = build_line(rope, line, self.wrap_width, self.tab_width);
+            self.row_counts.push(built.len() as u32);
+            self.lines.extend(built);
         }
         self.stats.rows_built += self.lines.len();
         self.stats.cells_built += self.lines.iter().map(|r| r.cells.len()).sum::<usize>();
-        self.recompute_metadata(rope);
+        self.recompute_chunks();
     }
 
-    fn recompute_metadata(&mut self, rope: &Rope) {
-        let total = rope.len_lines();
-        self.line_starts = (0..total).map(|line| rope.line_to_byte(line)).collect();
-        // `lines.len()` doubles as the "unset" sentinel below — safe because a
-        // real row index is always `< lines.len()`.
-        self.line_first_rows = vec![self.lines.len(); total + 1];
-        for (idx, row) in self.lines.iter().enumerate() {
-            if row.line < total && self.line_first_rows[row.line] == self.lines.len() {
-                self.line_first_rows[row.line] = idx;
+    /// Re-sum the chunk prefixes from `row_counts` — a single allocation-free
+    /// pass of plain integer adds (a Fenwick tree could patch in O(log n), but
+    /// only `first_row_of_line`/`len` read these sums, so the seam is small).
+    fn recompute_chunks(&mut self) {
+        self.chunk_prefix.clear();
+        self.chunk_prefix.push(0);
+        let mut total = 0usize;
+        for (i, rows) in self.row_counts.iter().enumerate() {
+            total += *rows as usize;
+            if (i + 1) % CHUNK == 0 {
+                self.chunk_prefix.push(total);
             }
         }
-        // Backfill row-less lines (in reverse) with the next line's first row,
-        // making `line_first_rows` monotonically non-decreasing — an invariant
-        // `update_after_edit` relies on for `row_start <= row_end` when it
-        // splices the edited span.
-        let mut next = self.lines.len();
-        for line in (0..total).rev() {
-            if self.line_first_rows[line] == self.lines.len() {
-                self.line_first_rows[line] = next;
-            } else {
-                next = self.line_first_rows[line];
-            }
+        if !self.row_counts.len().is_multiple_of(CHUNK) || self.row_counts.is_empty() {
+            self.chunk_prefix.push(total);
         }
-        self.line_first_rows[total] = self.lines.len();
+        self.total_rows = total;
     }
 }
 
@@ -457,5 +467,91 @@ mod tests {
             fresh.byte_to_pos(rope.len_bytes())
         );
         assert_eq!(layout.pos_to_byte(1, 1), fresh.pos_to_byte(1, 1));
+    }
+
+    #[test]
+    fn row_counts_and_chunk_sums_match_the_stored_rows() {
+        let docs = [
+            crate::testdoc::ascii(CHUNK + 50, 12), // spans a chunk boundary
+            crate::testdoc::cjk_emoji(40),
+            crate::testdoc::tabs_and_wrap(40),
+            crate::testdoc::giant_block(4 * 1024),
+            String::new(),
+        ];
+        for (i, doc) in docs.iter().enumerate() {
+            for width in [1, 7, 80] {
+                let rope = Rope::from_str(doc);
+                let layout = Layout::build(&rope, width, 4);
+                assert_eq!(layout.len(), layout.rows().len(), "doc {i} width {width}");
+                let mut expected_first = 0usize;
+                for line in 0..rope.len_lines() {
+                    assert_eq!(
+                        layout.first_row_of_line(line),
+                        expected_first,
+                        "doc {i} width {width} line {line}"
+                    );
+                    expected_first += layout.rows().iter().filter(|row| row.line == line).count();
+                }
+                assert_eq!(layout.first_row_of_line(rope.len_lines()), layout.len());
+            }
+        }
+    }
+
+    #[test]
+    fn randomized_incremental_updates_match_fresh_builds() {
+        use crate::testdoc::{self, XorShift};
+
+        // Pre-mutation edit impact, mirroring `App::edit_impact`.
+        fn impact(rope: &Rope, start: usize, end: usize, inserted: &str) -> (usize, usize, usize) {
+            let start_line = rope.byte_to_line(start);
+            let end_line = rope.byte_to_line(end);
+            let old = end_line - start_line + 1;
+            let new = inserted.bytes().filter(|b| *b == b'\n').count() + 1;
+            (start_line, old, new)
+        }
+
+        for seed in [0xA11CE, 0xB0B5EED] {
+            let mut rng = XorShift::new(seed);
+            let mut rope = Rope::from_str(&testdoc::random_doc(&mut rng, 60));
+            let width = 7 + rng.below(40);
+            let mut layout = Layout::build(&rope, width, 4);
+
+            for step in 0..50 {
+                let (start, end, text) = testdoc::random_edit(&mut rng, &rope);
+                let (start_line, old, new) = impact(&rope, start, end, &text);
+                rope.remove(rope.byte_to_char(start)..rope.byte_to_char(end));
+                rope.insert(rope.byte_to_char(start), &text);
+                layout.update_after_edit(&rope, width, 4, start_line, old, new);
+
+                let fresh = Layout::build(&rope, width, 4);
+                let context = format!("seed {seed:#x} step {step} width {width}");
+                assert_eq!(layout.len(), fresh.len(), "len ({context})");
+                for _ in 0..16 {
+                    let byte = rng.below(rope.len_bytes() + 1);
+                    assert_eq!(
+                        layout.byte_to_pos(byte),
+                        fresh.byte_to_pos(byte),
+                        "byte_to_pos({byte}) ({context})"
+                    );
+                }
+                for _ in 0..16 {
+                    let row = rng.below(fresh.len());
+                    let col = rng.below(width + 2) as u16;
+                    assert_eq!(
+                        layout.pos_to_byte(row, col),
+                        fresh.pos_to_byte(row, col),
+                        "pos_to_byte({row},{col}) ({context})"
+                    );
+                }
+                for _ in 0..8 {
+                    let line = rng.below(rope.len_lines() + 1);
+                    assert_eq!(
+                        layout.first_row_of_line(line),
+                        fresh.first_row_of_line(line),
+                        "first_row_of_line({line}) ({context})"
+                    );
+                }
+            }
+        }
     }
 }
