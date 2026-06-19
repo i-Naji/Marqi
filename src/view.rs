@@ -839,7 +839,7 @@ fn push_raw_segment(
     view: &mut HybridView,
 ) {
     let total = rope.len_lines();
-    let (first_row, end_row) = row_range(rope, layout, line, end_line, total);
+    let (first_row, end_row) = row_range(layout, line, end_line, total);
     let start_byte = rope.line_to_byte(line);
     let end_byte = if end_line + 1 < total {
         rope.line_to_byte(end_line + 1)
@@ -912,7 +912,7 @@ fn push_active_segment(
     let abs_la = block.start_line + rel_la;
     let abs_lb = block.start_line + rel_lb;
     let doc_total = rope.len_lines();
-    let (first_layout_row, end_layout_row) = row_range(rope, layout, abs_la, abs_lb, doc_total);
+    let (first_layout_row, end_layout_row) = row_range(layout, abs_la, abs_lb, doc_total);
     let raw_len = end_layout_row - first_layout_row;
     let active = ActiveLeaf::new((rel_la, rel_lb), vec![Line::default(); raw_len]);
 
@@ -1452,7 +1452,7 @@ fn push_raw_gap(
 ) {
     let total = rope.len_lines();
     let contains_cursor = (line..=end_line).contains(&cursor_line);
-    let (first_row, end_row) = row_range(rope, layout, line, end_line, total);
+    let (first_row, end_row) = row_range(layout, line, end_line, total);
     let screen_offset = lines.len();
     // Tokenize the gap so its non-blank lines (link reference definitions)
     // read as raw markdown rather than flat text. Most gaps are pure blank
@@ -1682,16 +1682,11 @@ fn line_contains(node: &AstNode, line: usize) -> bool {
 }
 
 /// Full-layout row span `[first, end)` covering source lines `[line, end_line]`.
-fn row_range(
-    rope: &Rope,
-    layout: &Layout,
-    line: usize,
-    end_line: usize,
-    total: usize,
-) -> (usize, usize) {
-    let first = layout.byte_to_pos(rope.line_to_byte(line)).0;
+/// Pure row arithmetic — materializes no cells.
+fn row_range(layout: &Layout, line: usize, end_line: usize, total: usize) -> (usize, usize) {
+    let first = layout.first_row_of_line(line);
     let end = if end_line + 1 < total {
-        layout.byte_to_pos(rope.line_to_byte(end_line + 1)).0
+        layout.first_row_of_line(end_line + 1)
     } else {
         layout.len()
     };
@@ -1711,7 +1706,7 @@ fn raw_lines(
     sel: Option<((usize, usize), Color)>,
 ) -> (Vec<Line<'static>>, usize) {
     let total = rope.len_lines();
-    let (first_row, end_row) = row_range(rope, layout, la, lb, total);
+    let (first_row, end_row) = row_range(layout, la, lb, total);
     let start_byte = rope.line_to_byte(la);
     let end_byte = if lb + 1 < total {
         rope.line_to_byte(lb + 1)

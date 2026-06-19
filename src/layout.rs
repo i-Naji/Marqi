@@ -23,7 +23,10 @@ use unicode_segmentation::UnicodeSegmentation;
 use unicode_width::UnicodeWidthStr;
 
 /// Lines per prefix-sum chunk: row lookups scan at most this many counts.
-const CHUNK: usize = 1024;
+/// Small enough that per-lookup scans stay trivial even when the view layer
+/// queries thousands of line boundaries per build; the prefix vector is still
+/// only `lines / CHUNK` words.
+const CHUNK: usize = 128;
 /// Materialized-line cache cap. Eviction is clear-all: re-materializing a
 /// line is cheap and bursty access (a viewport, a cursor) is local.
 const ROW_CACHE_LINES: usize = 1024;
