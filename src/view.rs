@@ -1011,7 +1011,7 @@ pub fn build_raw_full(
 
     let mut lines = Vec::with_capacity(layout.len());
     let mut line_numbers = Vec::with_capacity(layout.len());
-    for row in layout.rows() {
+    for row in &layout.collect_rows(0..layout.len()) {
         line_numbers.push(Some(row.line + 1));
         lines.push(raw_row(
             rope,
@@ -1378,7 +1378,8 @@ fn render_active_cached(
         .map(|src| src.map(|rel| block.start_line + rel))
         .collect();
     if let Some(hole) = hole_row {
-        for (offset, row) in layout.rows()[first_layout_row..first_layout_row + raw_len]
+        for (offset, row) in layout
+            .collect_rows(first_layout_row..first_layout_row + raw_len)
             .iter()
             .enumerate()
         {
@@ -1419,7 +1420,8 @@ fn raw_block_cached(
         theme,
         sel,
     );
-    let line_numbers = layout.rows()[first_layout_row..first_layout_row + lines.len()]
+    let line_numbers = layout
+        .collect_rows(first_layout_row..first_layout_row + lines.len())
         .iter()
         .map(|row| Some(row.line + 1))
         .collect();
@@ -1464,7 +1466,7 @@ fn push_raw_gap(
     let gap_source = source_slice(rope, start_byte, end_byte);
     let table = (!gap_source.trim().is_empty())
         .then(|| (start_byte, tokenizer::highlight(&gap_source, theme)));
-    for row in &layout.rows()[first_row..end_row] {
+    for row in &layout.collect_rows(first_row..end_row) {
         line_numbers.push(Some(row.line + 1));
         lines.push(raw_row(
             rope,
@@ -1720,7 +1722,8 @@ fn raw_lines(
         .slice(rope.byte_to_char(start_byte)..rope.byte_to_char(end_byte))
         .to_string();
     let table = (start_byte, tokenizer::highlight(&raw_source, theme));
-    let raw = layout.rows()[first_row..end_row]
+    let raw = layout
+        .collect_rows(first_row..end_row)
         .iter()
         .map(|row| {
             raw_row(

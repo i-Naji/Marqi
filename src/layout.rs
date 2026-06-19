@@ -1,30 +1,39 @@
-//! Display layout: turn rope lines into cached [`DisplayLine`]s (visual rows)
-//! and provide the bidirectional **byte ↔ (row, column)** mapping the cursor
-//! and renderer rely on.
+//! Display layout: lazily materialize rope lines into [`DisplayLine`]s
+//! (visual rows) and provide the bidirectional **byte ↔ (row, column)**
+//! mapping the cursor and renderer rely on.
 //!
 //! A single logical line may produce several display lines via soft-wrap.
 //! Columns are *display* columns: CJK and most emoji are width 2, combining
 //! marks width 0, and tabs expand to the next tab stop. The newline itself is
 //! never a cell — a hard-ended row's `byte_end` is the cursor's "end of line".
 //!
-//! Row geometry is kept as **exact per-line row counts** with chunked prefix
-//! sums: row↔line lookups cost one chunk scan, and an edit recounts only the
-//! lines it touched (no full-document metadata rebuild per keystroke). Byte
-//! offsets come from an O(1) Arc-shared [`Rope`] snapshot instead of a
-//! per-line table.
+//! The layout stores no cells for the document. It keeps **exact per-line row
+//! counts** (an allocation-free counting pass; pure arithmetic for printable
+//! ASCII) with chunked prefix sums for row↔line lookups, and materializes a
+//! line's `DisplayLine`s only when a query or the renderer asks for them,
+//! through a small bounded cache. An edit recounts only the lines it touched.
 
-use ropey::Rope;
+use std::cell::RefCell;
+use std::collections::HashMap;
+use std::ops::Range;
+use std::rc::Rc;
+
+use ropey::{Rope, RopeSlice};
 use unicode_segmentation::UnicodeSegmentation;
 use unicode_width::UnicodeWidthStr;
 
 /// Lines per prefix-sum chunk: row lookups scan at most this many counts.
 const CHUNK: usize = 1024;
+/// Materialized-line cache cap. Eviction is clear-all: re-materializing a
+/// line is cheap and bursty access (a viewport, a cursor) is local.
+const ROW_CACHE_LINES: usize = 1024;
 
 /// One grapheme cluster as placed on screen.
 ///
 /// Deliberately holds no text: the renderer slices the source line at
 /// `byte..byte + len` and expands a tab to `width` spaces. Keeping the struct
-/// at 12 heap-free bytes is what lets a full-document layout stay cheap.
+/// at 12 heap-free bytes is what keeps materialized lines cheap.
+#[derive(Clone, Copy)]
 pub struct Cell {
     /// Byte offset of this cluster's first byte, relative to its logical line.
     pub byte: u32,
@@ -49,6 +58,7 @@ impl Cell {
 }
 
 /// One visual row. Owns the byte half-open range `[byte_start, byte_end)`.
+#[derive(Clone)]
 pub struct DisplayLine {
     pub cells: Vec<Cell>,
     /// 0-based logical source line that owns this visual row.
@@ -78,20 +88,40 @@ impl DisplayLine {
     }
 }
 
-/// Lifetime construction counters plus a snapshot of what is currently stored.
+/// Lifetime materialization counters plus a snapshot of what is currently
+/// cached.
 #[derive(Default, Clone, Copy)]
 pub struct LayoutStats {
-    /// Display rows constructed since the layout was created (cumulative).
+    /// Display rows materialized since the layout was created (cumulative).
     pub rows_built: usize,
-    /// Cells constructed since the layout was created (cumulative).
+    /// Cells materialized since the layout was created (cumulative).
     pub cells_built: usize,
-    /// Display rows currently stored (snapshot).
+    /// Display rows currently held by the materialization cache (snapshot).
     pub rows_live: usize,
 }
 
-/// The document laid out into display rows for a given wrap width.
+#[derive(Default)]
+struct RowCache {
+    map: HashMap<usize, Rc<[DisplayLine]>>,
+    rows_live: usize,
+}
+
+impl RowCache {
+    fn clear(&mut self) {
+        self.map.clear();
+        self.rows_live = 0;
+    }
+
+    fn remove(&mut self, line: usize) {
+        if let Some(rows) = self.map.remove(&line) {
+            self.rows_live -= rows.len();
+        }
+    }
+}
+
+/// The document's display-row geometry for a given wrap width, with rows
+/// materialized on demand.
 pub struct Layout {
-    lines: Vec<DisplayLine>,
     /// Exact display rows per source line (always ≥ 1).
     row_counts: Vec<u32>,
     /// `chunk_prefix[c]` = total rows of chunks `[0, c)`; the last entry is
@@ -100,25 +130,29 @@ pub struct Layout {
     total_rows: usize,
     /// O(1) Arc-shared snapshot of the laid-out text, replaced on every
     /// build/update. Keeps byte↔position queries parameterless; staleness
-    /// follows exactly the same contract as the row data itself.
+    /// follows exactly the same contract as the row counts themselves.
     rope: Rope,
     wrap_width: usize,
     tab_width: usize,
-    stats: LayoutStats,
+    /// Materialized lines, keyed by source line. Interior mutability so the
+    /// long-standing `&Layout` query API keeps working at every call site.
+    cache: RefCell<RowCache>,
+    stats: std::cell::Cell<LayoutStats>,
 }
 
 impl Layout {
-    /// Lay `rope` out, wrapping at `wrap_width` columns with `tab_width` tab stops.
+    /// Lay `rope` out, wrapping at `wrap_width` columns with `tab_width` tab
+    /// stops. This only *counts* rows — no cells are materialized.
     pub fn build(rope: &Rope, wrap_width: usize, tab_width: usize) -> Self {
         let mut layout = Self {
-            lines: Vec::new(),
             row_counts: Vec::new(),
             chunk_prefix: Vec::new(),
             total_rows: 0,
             rope: rope.clone(),
             wrap_width: wrap_width.max(1),
             tab_width: tab_width.max(1),
-            stats: LayoutStats::default(),
+            cache: RefCell::new(RowCache::default()),
+            stats: std::cell::Cell::new(LayoutStats::default()),
         };
         layout.rebuild_all(rope);
         layout
@@ -126,12 +160,12 @@ impl Layout {
 
     pub fn stats(&self) -> LayoutStats {
         LayoutStats {
-            rows_live: self.lines.len(),
-            ..self.stats
+            rows_live: self.cache.borrow().rows_live,
+            ..self.stats.get()
         }
     }
 
-    /// Rebuild only the logical lines touched by an edit. `old_line_count`
+    /// Recount only the logical lines touched by an edit. `old_line_count`
     /// describes how many cached source lines were replaced; `new_line_count`
     /// describes how many source lines now occupy that span.
     pub fn update_after_edit(
@@ -167,28 +201,43 @@ impl Layout {
             .max(1)
             .min(total.saturating_sub(start_line).max(1));
 
-        let row_start = self.first_row_of_line(start_line);
-        let row_end = self.first_row_of_line(start_line + old_line_count);
-
-        let line_delta = new_line_count as isize - old_line_count as isize;
-        for row in &mut self.lines[row_end..] {
-            row.line = row.line.saturating_add_signed(line_delta);
-        }
-
-        let mut replacement = Vec::new();
+        let mut scratch = String::new();
         let mut new_counts = Vec::with_capacity(new_line_count);
         for line in start_line..start_line + new_line_count {
-            let built = build_line(rope, line, self.wrap_width, self.tab_width);
-            new_counts.push(built.len() as u32);
-            replacement.extend(built);
+            new_counts.push(count_line_rows(
+                rope,
+                line,
+                self.wrap_width,
+                self.tab_width,
+                &mut scratch,
+            ));
         }
-        self.stats.rows_built += replacement.len();
-        self.stats.cells_built += replacement.iter().map(|r| r.cells.len()).sum::<usize>();
-        self.lines.splice(row_start..row_end, replacement);
         self.row_counts.splice(
             start_line..(start_line + old_line_count).min(cached_lines),
             new_counts,
         );
+
+        // Materialized lines after a line-count change would keep stale
+        // `line` fields; drop them and re-materialize on demand. A same-count
+        // edit only invalidates the lines whose text changed.
+        let mut cache = self.cache.borrow_mut();
+        if old_line_count == new_line_count {
+            for line in start_line..start_line + new_line_count {
+                cache.remove(line);
+            }
+        } else {
+            let mut removed = 0;
+            cache.map.retain(|&line, rows| {
+                let keep = line < start_line;
+                if !keep {
+                    removed += rows.len();
+                }
+                keep
+            });
+            cache.rows_live -= removed;
+        }
+        drop(cache);
+
         self.rope = rope.clone();
         self.recompute_chunks();
     }
@@ -198,33 +247,72 @@ impl Layout {
         self.total_rows
     }
 
-    /// Every display row. Test-only: the live pipeline goes through
-    /// [`Layout::with_row`]/[`Layout::for_each_row`] so rows can later be
-    /// materialized on demand instead of stored.
-    #[cfg(test)]
-    pub fn rows(&self) -> &[DisplayLine] {
-        &self.lines
+    /// The materialized display rows of one source line (built on demand).
+    pub fn line_rows(&self, line: usize) -> Rc<[DisplayLine]> {
+        let line = line.min(self.rope.len_lines().saturating_sub(1));
+        if let Some(rows) = self.cache.borrow().map.get(&line) {
+            return rows.clone();
+        }
+        let rows: Rc<[DisplayLine]> =
+            build_line(&self.rope, line, self.wrap_width, self.tab_width).into();
+        debug_assert_eq!(
+            rows.len(),
+            self.row_counts.get(line).copied().unwrap_or(1) as usize,
+            "materialized rows must match the counted rows for line {line}"
+        );
+        let mut stats = self.stats.get();
+        stats.rows_built += rows.len();
+        stats.cells_built += rows.iter().map(|r| r.cells.len()).sum::<usize>();
+        self.stats.set(stats);
+        let mut cache = self.cache.borrow_mut();
+        if cache.map.len() >= ROW_CACHE_LINES {
+            cache.clear();
+        }
+        cache.rows_live += rows.len();
+        cache.map.insert(line, rows.clone());
+        rows
     }
 
     /// Visit one display row. Callback-style (rather than returning a
-    /// reference) so a lazily-materializing layout can serve rows from an
-    /// internal cache without leaking borrows.
+    /// reference) so rows can be served from the materialization cache
+    /// without leaking borrows.
     pub fn with_row<T>(&self, row: usize, f: impl FnOnce(&DisplayLine) -> T) -> T {
-        let row = row.min(self.lines.len().saturating_sub(1));
-        f(&self.lines[row])
+        let row = row.min(self.total_rows.saturating_sub(1));
+        let (line, first) = self.line_at_row(row);
+        let rows = self.line_rows(line);
+        let idx = (row - first).min(rows.len().saturating_sub(1));
+        f(&rows[idx])
     }
 
     /// Visit a contiguous range of display rows in order, passing each row's
-    /// global index. The range is clamped to the document.
-    pub fn for_each_row(
-        &self,
-        rows: std::ops::Range<usize>,
-        mut f: impl FnMut(usize, &DisplayLine),
-    ) {
-        let end = rows.end.min(self.lines.len());
-        for row in rows.start.min(end)..end {
-            f(row, &self.lines[row]);
+    /// global index. The range is clamped to the document; each source line
+    /// materializes once.
+    pub fn for_each_row(&self, range: Range<usize>, mut f: impl FnMut(usize, &DisplayLine)) {
+        let end = range.end.min(self.total_rows);
+        let mut row = range.start.min(end);
+        if row >= end {
+            return;
         }
+        let (mut line, mut first) = self.line_at_row(row);
+        while row < end && line < self.row_counts.len() {
+            let rows = self.line_rows(line);
+            let upto = (first + rows.len()).min(end);
+            for r in row..upto {
+                f(r, &rows[r - first]);
+            }
+            first += rows.len();
+            row = first;
+            line += 1;
+        }
+    }
+
+    /// Every display row, cloned out of the lazy cache. Test-only convenience
+    /// for the legacy full-build oracles.
+    #[cfg(test)]
+    pub fn collect_rows(&self, range: Range<usize>) -> Vec<DisplayLine> {
+        let mut out = Vec::new();
+        self.for_each_row(range, |_, dl| out.push(dl.clone()));
+        out
     }
 
     /// First display row of a logical source line. A line at or past the end
@@ -241,6 +329,29 @@ impl Layout {
         row
     }
 
+    /// `(source line, that line's first global row)` for a display row.
+    fn line_at_row(&self, row: usize) -> (usize, usize) {
+        if self.row_counts.is_empty() {
+            return (0, 0);
+        }
+        let row = row.min(self.total_rows.saturating_sub(1));
+        let chunk = self
+            .chunk_prefix
+            .partition_point(|start| *start <= row)
+            .saturating_sub(1)
+            .min(self.chunk_prefix.len().saturating_sub(2));
+        let mut line = chunk * CHUNK;
+        let mut first = self.chunk_prefix[chunk];
+        loop {
+            let rows = self.row_counts[line] as usize;
+            if row < first + rows || line + 1 >= self.row_counts.len() {
+                return (line, first);
+            }
+            first += rows;
+            line += 1;
+        }
+    }
+
     /// Absolute byte offset where a logical source line starts. Lines past the
     /// end of the document map to the last line's start.
     pub fn line_start(&self, line: usize) -> usize {
@@ -248,53 +359,46 @@ impl Layout {
         self.rope.line_to_byte(line.min(last))
     }
 
-    /// Map a rope byte offset to its `(row, display_col)` on screen.
+    /// Map a rope byte offset to its `(row, display_col)` on screen. Only the
+    /// byte's own line is materialized.
     pub fn byte_to_pos(&self, byte: usize) -> (usize, u16) {
         let byte = byte.min(self.rope.len_bytes());
         let line = self.rope.byte_to_line(byte);
         let rel = byte.saturating_sub(self.line_start(line));
-        let row_start = self.first_row_of_line(line);
-        let row_end = self.first_row_of_line(line + 1);
-        let mut r = row_start;
+        let first = self.first_row_of_line(line);
+        let rows = self.line_rows(line);
 
-        while let Some(dl) = self.lines.get(r) {
+        for (i, dl) in rows.iter().enumerate() {
             if rel >= dl.byte_start && rel < dl.byte_end {
                 for cell in &dl.cells {
                     if rel < cell.byte_end() {
-                        return (r, cell.col);
+                        return (first + i, cell.col);
                     }
                 }
-                return (r, dl.width);
+                return (first + i, dl.width);
             }
             // End-of-line position only belongs to a hard-ended row; a
-            // soft-wrap boundary is owned by the following row, which has the
-            // same byte_start and is selected by the lookup above.
+            // soft-wrap boundary is owned by the following row.
             if rel == dl.byte_end && !dl.soft_wrapped {
-                return (r, dl.width);
+                return (first + i, dl.width);
             }
-            if r + 1 < row_end
-                && self
-                    .lines
-                    .get(r + 1)
-                    .is_some_and(|next| rel >= next.byte_start)
-            {
-                r += 1;
+            if i + 1 < rows.len() && rel >= rows[i + 1].byte_start {
                 continue;
             }
             break;
         }
-        let r = row_end
-            .saturating_sub(1)
-            .min(self.lines.len().saturating_sub(1));
-        (r, self.lines.get(r).map_or(0, |d| d.width))
+        let i = rows.len() - 1;
+        (first + i, rows[i].width)
     }
 
     /// Map a `(row, target_col)` back to the nearest rope byte offset. `row` and
     /// `target_col` are clamped into range.
     pub fn pos_to_byte(&self, row: usize, target_col: u16) -> usize {
-        let row = row.min(self.lines.len().saturating_sub(1));
-        let dl = &self.lines[row];
-        let line_start = self.line_start(dl.line);
+        let row = row.min(self.total_rows.saturating_sub(1));
+        let (line, first) = self.line_at_row(row);
+        let rows = self.line_rows(line);
+        let dl = &rows[(row - first).min(rows.len().saturating_sub(1))];
+        let line_start = self.line_start(line);
         if dl.cells.is_empty() {
             return line_start + dl.byte_start;
         }
@@ -316,30 +420,37 @@ impl Layout {
         line_start + dl.cells.last().map_or(dl.byte_start, |c| c.byte())
     }
 
+    /// Recount every line (allocation-free aside from one reusable scratch).
     fn rebuild_all(&mut self, rope: &Rope) {
         self.rope = rope.clone();
-        self.lines.clear();
         self.row_counts.clear();
-        for line in 0..rope.len_lines() {
-            let built = build_line(rope, line, self.wrap_width, self.tab_width);
-            self.row_counts.push(built.len() as u32);
-            self.lines.extend(built);
+        let total = rope.len_lines();
+        self.row_counts.reserve(total);
+        let mut scratch = String::new();
+        for line in 0..total {
+            self.row_counts.push(count_line_rows(
+                rope,
+                line,
+                self.wrap_width,
+                self.tab_width,
+                &mut scratch,
+            ));
         }
-        self.stats.rows_built += self.lines.len();
-        self.stats.cells_built += self.lines.iter().map(|r| r.cells.len()).sum::<usize>();
+        self.cache.borrow_mut().clear();
         self.recompute_chunks();
     }
 
     /// Re-sum the chunk prefixes from `row_counts` — a single allocation-free
     /// pass of plain integer adds (a Fenwick tree could patch in O(log n), but
-    /// only `first_row_of_line`/`len` read these sums, so the seam is small).
+    /// only `first_row_of_line`/`line_at_row`/`len` read these sums, so the
+    /// seam is small).
     fn recompute_chunks(&mut self) {
         self.chunk_prefix.clear();
         self.chunk_prefix.push(0);
         let mut total = 0usize;
         for (i, rows) in self.row_counts.iter().enumerate() {
             total += *rows as usize;
-            if (i + 1) % CHUNK == 0 {
+            if (i + 1).is_multiple_of(CHUNK) {
                 self.chunk_prefix.push(total);
             }
         }
@@ -348,6 +459,68 @@ impl Layout {
         }
         self.total_rows = total;
     }
+}
+
+/// Exact display-row count for one source line. Printable-ASCII lines (the
+/// common case) are pure arithmetic: every byte is one width-1 cell, so wrap
+/// boundaries fall exactly at multiples of the width. Anything else (tabs,
+/// control bytes, non-ASCII) runs the same walk as [`build_line`] against a
+/// reusable scratch buffer.
+fn count_line_rows(
+    rope: &Rope,
+    line: usize,
+    wrap_width: usize,
+    tab_width: usize,
+    scratch: &mut String,
+) -> u32 {
+    let slice = rope.line(line);
+    if let Some(rows) = ascii_fast_rows(&slice, wrap_width.max(1)) {
+        return rows;
+    }
+    scratch.clear();
+    for chunk in slice.chunks() {
+        scratch.push_str(chunk);
+    }
+    let content = scratch.trim_end_matches(['\n', '\r']);
+    count_rows_by_walk(content, wrap_width, tab_width)
+}
+
+/// Row count for a line of printable ASCII (plus a trailing `\n`/`\r` run),
+/// or `None` when the line needs the full grapheme walk.
+fn ascii_fast_rows(slice: &RopeSlice, wrap: usize) -> Option<u32> {
+    let mut content_len = 0usize;
+    let mut in_terminator = false;
+    for chunk in slice.chunks() {
+        for &b in chunk.as_bytes() {
+            match b {
+                0x20..=0x7E if !in_terminator => content_len += 1,
+                b'\n' | b'\r' => in_terminator = true,
+                _ => return None,
+            }
+        }
+    }
+    Some(content_len.div_ceil(wrap).max(1) as u32)
+}
+
+/// The wrap walk of [`build_line`], counting rows instead of building cells.
+/// Must stay in lockstep with it — `line_rows` debug-asserts the equivalence
+/// and the randomized layout tests cross-check it on every document shape.
+fn count_rows_by_walk(content: &str, wrap_width: usize, tab_width: usize) -> u32 {
+    let wrap = wrap_width.max(1) as u16;
+    let tab = tab_width.max(1);
+    let mut rows: u32 = 1;
+    let mut col: u16 = 0;
+    let mut row_has_cells = false;
+    for g in content.graphemes(true) {
+        if col + grapheme_width(g, col, tab) > wrap && row_has_cells {
+            rows += 1;
+            col = 0;
+        }
+        // The cluster is always placed on the (possibly fresh) row.
+        col += grapheme_width(g, col, tab);
+        row_has_cells = true;
+    }
+    rows
 }
 
 fn build_line(rope: &Rope, line: usize, wrap_width: usize, tab_width: usize) -> Vec<DisplayLine> {
@@ -426,7 +599,8 @@ mod tests {
         let layout = Layout::build(&rope, 80, 4);
         // Tab fills columns 0..4, so x sits at col 4.
         assert_eq!(layout.byte_to_pos("\t".len()), (0, 4));
-        let cell = &layout.rows()[0].cells[0];
+        let rows = layout.line_rows(0);
+        let cell = &rows[0].cells[0];
         assert_eq!((cell.byte, cell.len, cell.width, cell.col), (0, 1, 4, 0));
     }
 
@@ -435,7 +609,7 @@ mod tests {
         let rope = Rope::from_str("abcdef");
         let layout = Layout::build(&rope, 3, 4);
         assert_eq!(layout.len(), 2);
-        assert!(layout.rows()[0].soft_wrapped);
+        assert!(layout.line_rows(0)[0].soft_wrapped);
         // 'd' starts the second visual row.
         assert_eq!(layout.byte_to_pos(3), (1, 0));
         // Round-trips back.
@@ -470,19 +644,19 @@ mod tests {
     }
 
     #[test]
-    fn row_counts_and_chunk_sums_match_the_stored_rows() {
+    fn counting_matches_materialization_across_shapes() {
         let docs = [
             crate::testdoc::ascii(CHUNK + 50, 12), // spans a chunk boundary
             crate::testdoc::cjk_emoji(40),
             crate::testdoc::tabs_and_wrap(40),
             crate::testdoc::giant_block(4 * 1024),
+            "interior\rreturn and trailing run\r\r\n".to_string(),
             String::new(),
         ];
         for (i, doc) in docs.iter().enumerate() {
             for width in [1, 7, 80] {
                 let rope = Rope::from_str(doc);
                 let layout = Layout::build(&rope, width, 4);
-                assert_eq!(layout.len(), layout.rows().len(), "doc {i} width {width}");
                 let mut expected_first = 0usize;
                 for line in 0..rope.len_lines() {
                     assert_eq!(
@@ -490,11 +664,51 @@ mod tests {
                         expected_first,
                         "doc {i} width {width} line {line}"
                     );
-                    expected_first += layout.rows().iter().filter(|row| row.line == line).count();
+                    // The counted rows must equal the materialized rows.
+                    expected_first += layout.line_rows(line).len();
                 }
                 assert_eq!(layout.first_row_of_line(rope.len_lines()), layout.len());
+                assert_eq!(layout.len(), expected_first, "doc {i} width {width}");
             }
         }
+    }
+
+    #[test]
+    fn build_materializes_nothing_until_queried() {
+        let rope = Rope::from_str(&crate::testdoc::ascii(5_000, 60));
+        let layout = Layout::build(&rope, 40, 4);
+        assert_eq!(
+            layout.stats().cells_built,
+            0,
+            "building the layout is a counting pass only"
+        );
+        let _ = layout.byte_to_pos(rope.len_bytes() / 2);
+        let stats = layout.stats();
+        assert!(stats.cells_built > 0, "queries materialize on demand");
+        assert!(
+            stats.rows_live <= 2,
+            "one query materializes one line, got {} rows",
+            stats.rows_live
+        );
+    }
+
+    #[test]
+    fn row_cache_stays_bounded_and_correct_after_eviction() {
+        let rope = Rope::from_str(&crate::testdoc::ascii(3 * ROW_CACHE_LINES, 10));
+        let layout = Layout::build(&rope, 40, 4);
+        for line in 0..rope.len_lines() {
+            let _ = layout.line_rows(line);
+        }
+        assert!(
+            layout.stats().rows_live <= ROW_CACHE_LINES + 1,
+            "cache stays bounded, got {}",
+            layout.stats().rows_live
+        );
+        // Eviction never changes answers.
+        assert_eq!(layout.byte_to_pos(0), (0, 0));
+        let byte = rope.line_to_byte(7) + 3;
+        assert_eq!(layout.byte_to_pos(byte), (7, 3));
+        assert_eq!(layout.pos_to_byte(7, 3), byte);
     }
 
     #[test]
@@ -550,6 +764,26 @@ mod tests {
                         fresh.first_row_of_line(line),
                         "first_row_of_line({line}) ({context})"
                     );
+                }
+                // Full row equality for a sampled line: cells, byte ranges,
+                // wrap flags — materialization agrees with a fresh build.
+                let line = rng.below(rope.len_lines());
+                let (ours, theirs) = (layout.line_rows(line), fresh.line_rows(line));
+                assert_eq!(ours.len(), theirs.len(), "line {line} rows ({context})");
+                for (a, b) in ours.iter().zip(theirs.iter()) {
+                    assert_eq!(
+                        (a.line, a.byte_start, a.byte_end, a.width, a.soft_wrapped),
+                        (b.line, b.byte_start, b.byte_end, b.width, b.soft_wrapped),
+                        "row shape, line {line} ({context})"
+                    );
+                    assert_eq!(a.cells.len(), b.cells.len(), "cells, line {line}");
+                    for (ca, cb) in a.cells.iter().zip(&b.cells) {
+                        assert_eq!(
+                            (ca.byte, ca.len, ca.width, ca.col),
+                            (cb.byte, cb.len, cb.width, cb.col),
+                            "cell, line {line} ({context})"
+                        );
+                    }
                 }
             }
         }
