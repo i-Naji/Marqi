@@ -13,38 +13,68 @@ use ratatui::style::{Modifier, Style};
 
 use super::theme::MarkdownTheme;
 
+/// Cross-line tokenizer state: inside a fenced code block (`(char, opening
+/// run)`) or not. This is the ONLY state the scanner carries between lines —
+/// everything else (headings, quotes, lists, inline emphasis) is per-line —
+/// so seeding it correctly makes styling a window of a document byte-identical
+/// to styling the whole document.
+#[derive(Clone, Copy, PartialEq, Eq, Default, Debug)]
+pub struct FenceState(Option<(u8, usize)>);
+
+impl FenceState {
+    /// Whether the next line starts inside a fenced code block.
+    pub fn is_inside(self) -> bool {
+        self.0.is_some()
+    }
+}
+
+/// The state at the start of the NEXT line, given this line's text and the
+/// state at its own start — exactly the transition [`highlight_from`] applies.
+pub fn fence_transition(line: &str, state: FenceState) -> FenceState {
+    match state.0 {
+        Some((open, open_run)) => match fence_delimiter(line) {
+            // A closing fence: same char, at least the opening run, bare.
+            Some((ch, run, true)) if ch == open && run >= open_run => FenceState(None),
+            _ => state,
+        },
+        None => match fence_delimiter(line) {
+            Some((ch, run, _)) => FenceState(Some((ch, run))),
+            None => FenceState(None),
+        },
+    }
+}
+
 /// One style per byte of `src` (`result.len() == src.len()`).
 pub fn highlight(src: &str, theme: &MarkdownTheme) -> Vec<Style> {
+    highlight_from(src, theme, FenceState::default()).0
+}
+
+/// One style per byte of `src`, starting from `state` (for windows of a larger
+/// document); returns the state after the last line so callers can chain.
+pub fn highlight_from(
+    src: &str,
+    theme: &MarkdownTheme,
+    mut state: FenceState,
+) -> (Vec<Style>, FenceState) {
     let mut styles = vec![theme.text; src.len()];
     let mut offset = 0;
-    // `Some((char, run))` while between fence delimiters: interior lines are
-    // code, not markdown — scanning them for emphasis/links/headings would
-    // style `a * b` in a snippet as emphasis.
-    let mut fence: Option<(u8, usize)> = None;
     for line in src.split_inclusive('\n') {
         let out = &mut styles[offset..offset + line.len()];
-        match fence {
-            Some((open, open_run)) => match fence_delimiter(line) {
-                // A closing fence: same char, at least the opening run, bare.
-                Some((ch, run, true)) if ch == open && run >= open_run => {
-                    highlight_line(line, out, theme);
-                    fence = None;
-                }
-                _ => {
-                    let content_len = line.trim_end_matches(['\n', '\r']).len();
-                    fill(out, 0, content_len, theme.code_inline);
-                }
-            },
-            None => {
-                if let Some((ch, run, _)) = fence_delimiter(line) {
-                    fence = Some((ch, run));
-                }
-                highlight_line(line, out, theme);
-            }
+        let next = fence_transition(line, state);
+        // Fence interiors are code, not markdown — scanning them for
+        // emphasis/links/headings would style `a * b` in a snippet as
+        // emphasis. Opening and closing fence lines themselves are markdown
+        // (the delimiter branch of `highlight_line` styles them as markers).
+        if state.is_inside() && next.is_inside() {
+            let content_len = line.trim_end_matches(['\n', '\r']).len();
+            fill(out, 0, content_len, theme.code_inline);
+        } else {
+            highlight_line(line, out, theme);
         }
+        state = next;
         offset += line.len();
     }
-    styles
+    (styles, state)
 }
 
 /// `Some((delimiter_char, run_len, rest_is_blank))` when the line starts with a
@@ -451,6 +481,59 @@ mod tests {
         let open = src.find('(').unwrap();
         for (i, style) in styles.iter().enumerate().skip(open) {
             assert_eq!(*style, theme.marker, "url byte {i} should be a marker");
+        }
+    }
+
+    #[test]
+    fn fence_transitions_track_open_close_and_mismatches() {
+        let outside = FenceState::default();
+        let in_ticks = fence_transition("```rust\n", outside);
+        assert!(in_ticks.is_inside(), "3+ backticks open a fence");
+
+        // Interior lines, tilde lines, and short closers stay inside.
+        assert_eq!(fence_transition("a * b\n", in_ticks), in_ticks);
+        assert_eq!(fence_transition("~~~\n", in_ticks), in_ticks);
+        assert_eq!(fence_transition("``\n", in_ticks), in_ticks);
+        // A closer with an info string is not bare — stays inside.
+        assert_eq!(fence_transition("```rust\n", in_ticks), in_ticks);
+        // A bare closer with at least the opening run closes.
+        assert!(!fence_transition("```\n", in_ticks).is_inside());
+        assert!(!fence_transition("````\n", in_ticks).is_inside());
+        // Indentation and CRLF are trimmed exactly like the scanner.
+        assert!(!fence_transition("  \t```\r\n", in_ticks).is_inside());
+
+        // A longer opening run needs an equally long closer.
+        let in_five = fence_transition("`````\n", outside);
+        assert_eq!(fence_transition("```\n", in_five), in_five);
+        assert!(!fence_transition("`````\n", in_five).is_inside());
+
+        // Non-fence lines outside stay outside.
+        assert!(!fence_transition("plain text\n", outside).is_inside());
+    }
+
+    #[test]
+    fn windowed_highlight_matches_the_whole_document_scan() {
+        let theme = MarkdownTheme::default();
+        let src = "# h\n\n```py\na = b * c\n```\n\npara *em*\n\n~~~\ntilde code\n";
+        let whole = highlight(src, &theme);
+
+        // Walk the document line by line, chaining windows of 1..=3 lines;
+        // each window's styles must equal the same byte span of the whole scan.
+        for window_lines in 1..=3 {
+            let mut state = FenceState::default();
+            let mut offset = 0;
+            let lines: Vec<&str> = src.split_inclusive('\n').collect();
+            for chunk in lines.chunks(window_lines) {
+                let window: String = chunk.concat();
+                let (styles, next) = highlight_from(&window, &theme, state);
+                assert_eq!(
+                    styles,
+                    whole[offset..offset + window.len()],
+                    "window at byte {offset} (size {window_lines})"
+                );
+                offset += window.len();
+                state = next;
+            }
         }
     }
 }
