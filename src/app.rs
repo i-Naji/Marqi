@@ -16,6 +16,7 @@ use crate::config::Config;
 use crate::cursor::Cursor;
 use crate::history::{Edit, History};
 use crate::layout::Layout;
+use crate::line_index::LineIndex;
 use crate::markdown::{CodeHighlighter, MarkdownTheme};
 use crate::text::{next_grapheme, prev_grapheme};
 use crate::view::{self, HybridView, PreviewView, ViewCache};
@@ -197,6 +198,10 @@ pub struct App {
     layout_width: usize,
     layout_dirty: bool,
 
+    /// Per-line tokenizer state, maintained incrementally on every edit
+    /// (width-independent, so never "dirty").
+    line_index: LineIndex,
+
     // Monotonic content version, bumped on every edit.
     version: u64,
 
@@ -223,6 +228,7 @@ pub struct App {
 impl App {
     pub fn new(buffer: TextBuffer) -> Self {
         let layout = Layout::build(buffer.rope(), 1, DEFAULT_TAB_WIDTH);
+        let line_index = LineIndex::build(buffer.rope());
         Self {
             buffer,
             cursor: Cursor::default(),
@@ -257,6 +263,7 @@ impl App {
             layout,
             layout_width: 1,
             layout_dirty: true,
+            line_index,
             version: 0,
             theme: MarkdownTheme::default(),
             highlighter: CodeHighlighter::new(None),
@@ -1371,6 +1378,12 @@ impl App {
         } else {
             self.layout_dirty = true;
         }
+        self.line_index.apply_edit(
+            self.buffer.rope(),
+            impact.start_line,
+            impact.old_line_count,
+            impact.new_line_count,
+        );
         self.preview_dirty = true;
     }
 
@@ -1523,10 +1536,11 @@ impl App {
         let cursor_line = self.buffer.rope().byte_to_line(self.cursor.byte);
         let selection = self.selection_range();
         view::assemble(
-            self.view.as_mut().expect("view built before assembly"),
+            self.view.as_ref().expect("view built before assembly"),
             &mut self.view_cache,
             self.buffer.rope(),
             &self.layout,
+            &self.line_index,
             cursor_line,
             selection,
             self.wrap_width,

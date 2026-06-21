@@ -26,6 +26,29 @@ impl FenceState {
     pub fn is_inside(self) -> bool {
         self.0.is_some()
     }
+
+    /// Pack to 16 bits for per-line storage: 0 = outside a fence; otherwise
+    /// bit 15 selects the delimiter (0 = backtick, 1 = tilde) and the low 15
+    /// bits hold the opening run length. Runs are ≥ 3, so 0 is free as the
+    /// "outside" sentinel; a >32k-character delimiter clamps (out of scope).
+    pub fn pack(self) -> u16 {
+        match self.0 {
+            None => 0,
+            Some((ch, run)) => {
+                let tilde = if ch == b'~' { 0x8000 } else { 0 };
+                tilde | (run.min(0x7FFF) as u16)
+            }
+        }
+    }
+
+    /// Inverse of [`FenceState::pack`].
+    pub fn unpack(bits: u16) -> Self {
+        if bits == 0 {
+            return Self(None);
+        }
+        let ch = if bits & 0x8000 != 0 { b'~' } else { b'`' };
+        Self(Some((ch, (bits & 0x7FFF) as usize)))
+    }
 }
 
 /// The state at the start of the NEXT line, given this line's text and the

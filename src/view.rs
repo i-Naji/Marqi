@@ -33,6 +33,7 @@ use ratatui::text::Line;
 use ropey::Rope;
 
 use crate::layout::{DisplayLine, Layout};
+use crate::line_index::LineIndex;
 use crate::markdown::{
     ActiveLeaf, CodeHighlighter, MarkdownTheme, gfm_options, merge_spans, render_block_node,
     render_block_with_hole, render_preview_rows, tokenizer,
@@ -54,19 +55,15 @@ pub struct HybridView {
 
 /// One run of rendered rows.
 enum Segment {
-    /// Raw layout rows for source lines `[start_line, end_line]`: blank/ref-def
+    /// Raw layout rows for source lines ending at `end_line`: blank/ref-def
     /// gaps, blocks whose isolated re-parse renders blank, the active-block
-    /// raw fallback, and the whole document in raw view.
+    /// raw fallback, and the whole document in raw view. Styled per assembled
+    /// window, seeded from the line index — no styles are stored. (The run's
+    /// source lines are recovered from the layout rows themselves.)
     Raw {
-        start_line: usize,
         end_line: usize,
         first_layout_row: usize,
         rows: usize,
-        /// Style the run with the markdown tokenizer (non-blank source); a
-        /// pure-blank run renders unstyled, exactly as before.
-        tokenize: bool,
-        /// Lazily-built `(start_byte, per-byte styles)` for the run's source.
-        tokens: Option<Rc<(usize, Vec<Style>)>>,
     },
     /// An inactive block rendered as preview; rows are fetched from the render
     /// cache at assembly time (and re-rendered there after an eviction).
@@ -840,24 +837,15 @@ fn push_raw_segment(
 ) {
     let total = rope.len_lines();
     let (first_row, end_row) = row_range(layout, line, end_line, total);
-    let start_byte = rope.line_to_byte(line);
-    let end_byte = if end_line + 1 < total {
-        rope.line_to_byte(end_line + 1)
-    } else {
-        rope.len_bytes()
-    };
     if (line..=end_line).contains(&cursor_line) {
         view.active_first_row = first_row;
         view.active_screen_row = view.total_rows();
         view.active_lines = (line, end_line);
     }
     view.push(Segment::Raw {
-        start_line: line,
         end_line,
         first_layout_row: first_row,
         rows: end_row - first_row,
-        tokenize: !slice_is_blank(rope, start_byte, end_byte),
-        tokens: None,
     });
 }
 
@@ -987,13 +975,6 @@ fn push_active_segment(
     });
 }
 
-/// Whether a byte range of the rope contains only whitespace.
-fn slice_is_blank(rope: &Rope, start: usize, end: usize) -> bool {
-    rope.slice(rope.byte_to_char(start)..rope.byte_to_char(end))
-        .chars()
-        .all(char::is_whitespace)
-}
-
 /// Legacy full-document raw build (test oracle; see [`build_full`]).
 #[cfg(test)]
 pub fn build_raw_full(
@@ -1039,20 +1020,16 @@ pub fn build_raw_full(
 }
 
 /// Build the raw-view row index: one raw segment covering the whole document
-/// (markers kept, fully editable; screen row equals layout row). The tokenizer
-/// table is built lazily on first assembly and lives for the index's lifetime
-/// — one tokenize per edit/width change, instead of one per cursor move.
+/// (markers kept, fully editable; screen row equals layout row). Styling is
+/// per assembled window — opening a raw view stores no styles at all.
 pub fn build_raw_index(rope: &Rope, layout: &Layout) -> HybridView {
     let total = rope.len_lines();
     let rows = layout.len();
     HybridView {
         segments: vec![Segment::Raw {
-            start_line: 0,
             end_line: total.saturating_sub(1),
             first_layout_row: 0,
             rows,
-            tokenize: true,
-            tokens: None,
         }],
         row_starts: vec![0, rows],
         active_first_row: 0,
@@ -1063,13 +1040,16 @@ pub fn build_raw_index(rope: &Rope, layout: &Layout) -> HybridView {
 
 /// Render the rows `[start_row, start_row + count)` of the index. The only
 /// place rendered hybrid/raw rows are produced: selection and the active-line
-/// background are applied here, per window, from the current cursor state.
+/// background are applied here, per window, from the current cursor state,
+/// and raw runs tokenize only the window's source lines (seeded from the
+/// line index, so the styles equal a whole-document scan).
 #[allow(clippy::too_many_arguments)]
 pub fn assemble(
-    view: &mut HybridView,
+    view: &HybridView,
     cache: &mut ViewCache,
     rope: &Rope,
     layout: &Layout,
+    line_index: &LineIndex,
     cursor_line: usize,
     selection: Option<(usize, usize)>,
     width: usize,
@@ -1095,43 +1075,43 @@ pub fn assemble(
         };
         let seg_rows = view.row_starts[seg + 1] - view.row_starts[seg];
         let take = (end - row).min(seg_rows - offset);
-        match &mut view.segments[seg] {
+        match &view.segments[seg] {
             Segment::Raw {
-                start_line,
                 end_line,
                 first_layout_row,
-                tokenize,
-                tokens,
                 ..
             } => {
-                if *tokenize && tokens.is_none() {
-                    let total_lines = rope.len_lines();
-                    let start_byte = rope.line_to_byte(*start_line);
-                    let end_byte = if *end_line + 1 < total_lines {
-                        rope.line_to_byte(*end_line + 1)
-                    } else {
-                        rope.len_bytes()
-                    };
-                    let source = source_slice(rope, start_byte, end_byte);
-                    *tokens = Some(Rc::new((start_byte, tokenizer::highlight(&source, theme))));
-                }
-                let table = tokens.as_deref();
-                layout.for_each_row(
-                    *first_layout_row + offset..*first_layout_row + offset + take,
-                    |_, dl| {
-                        out.numbers.push(Some(dl.line + 1));
-                        out.lines.push(raw_row(
-                            rope,
-                            dl,
-                            layout.line_start(dl.line),
-                            table,
-                            theme.text,
-                            Some(cursor_line),
-                            theme.active_line,
-                            sel,
-                        ));
-                    },
-                );
+                // Tokenize exactly the source lines the visible rows cover —
+                // whole lines, even when the window starts on a wrapped
+                // continuation row.
+                let rows_range = *first_layout_row + offset..*first_layout_row + offset + take;
+                let first_line = layout.with_row(rows_range.start, |dl| dl.line);
+                let last_line = layout
+                    .with_row(rows_range.end - 1, |dl| dl.line)
+                    .min(*end_line);
+                let start_byte = rope.line_to_byte(first_line);
+                let end_byte = if last_line + 1 < rope.len_lines() {
+                    rope.line_to_byte(last_line + 1)
+                } else {
+                    rope.len_bytes()
+                };
+                let source = source_slice(rope, start_byte, end_byte);
+                let (styles, _) =
+                    tokenizer::highlight_from(&source, theme, line_index.fence_at(first_line));
+                let table = (start_byte, styles);
+                layout.for_each_row(rows_range, |_, dl| {
+                    out.numbers.push(Some(dl.line + 1));
+                    out.lines.push(raw_row(
+                        rope,
+                        dl,
+                        layout.line_start(dl.line),
+                        Some(&table),
+                        theme.text,
+                        Some(cursor_line),
+                        theme.active_line,
+                        sel,
+                    ));
+                });
             }
             Segment::Block { block, .. } => {
                 let (mut block_lines, sources) =
@@ -1812,7 +1792,7 @@ mod tests {
         highlighter: &CodeHighlighter,
         version: u64,
     ) -> FullView {
-        let mut view = build_index(
+        let view = build_index(
             cache,
             rope,
             layout,
@@ -1822,15 +1802,17 @@ mod tests {
             highlighter,
             version,
         );
+        let line_index = LineIndex::build(rope);
         let cursor_line = rope
             .byte_to_line(cursor_byte)
             .min(rope.len_lines().saturating_sub(1));
         let total = view.total_rows();
         let out = assemble(
-            &mut view,
+            &view,
             cache,
             rope,
             layout,
+            &line_index,
             cursor_line,
             selection,
             width,
@@ -2370,6 +2352,59 @@ mod tests {
         }
     }
 
+    /// Windowed raw assembly must equal the corresponding slice of the legacy
+    /// whole-document build even when the window starts INSIDE a fenced code
+    /// block — the line index seeds the tokenizer with the right state.
+    #[test]
+    fn raw_windows_starting_inside_fences_match_the_whole_scan() {
+        let mut src = String::from("# top\n\n```rust\n");
+        for i in 0..30 {
+            src.push_str(&format!("let v{i} = *not_emphasis* + {i};\n"));
+        }
+        src.push_str("```\n\nafter *em* text\n\n~~~\ntilde body\n"); // unclosed tilde fence
+        let rope = Rope::from_str(&src);
+        let layout = Layout::build(&rope, 50, 4);
+        let theme = MarkdownTheme::default();
+        let hl = CodeHighlighter::new(None);
+        let line_index = LineIndex::build(&rope);
+
+        let oracle = build_raw_full(&rope, &layout, 0, None, &theme);
+        let view = build_raw_index(&rope, &layout);
+        let mut cache = ViewCache::default();
+        let total = view.total_rows();
+        // Windows landing inside the backtick fence, across its close, and
+        // inside the unclosed tilde fence.
+        for start in [0, 5, 17, 30, total.saturating_sub(6)] {
+            for count in [1, 4, 9] {
+                let ours = assemble(
+                    &view,
+                    &mut cache,
+                    &rope,
+                    &layout,
+                    &line_index,
+                    0,
+                    None,
+                    50,
+                    &theme,
+                    &hl,
+                    start,
+                    count,
+                );
+                let end = (start + count).min(total);
+                assert_eq!(
+                    ours.lines,
+                    oracle.lines[start..end],
+                    "window [{start}, {end}) rows"
+                );
+                assert_eq!(
+                    ours.numbers,
+                    oracle.line_numbers[start..end],
+                    "window [{start}, {end}) labels"
+                );
+            }
+        }
+    }
+
     /// Raw-view parity: the single-segment index assembled in full equals the
     /// legacy whole-document raw build.
     #[test]
@@ -2391,17 +2426,19 @@ mod tests {
             for cursor in [0, len / 2, len] {
                 for selection in [None, Some((0, len.min(9)))] {
                     let oracle = build_raw_full(&rope, &layout, cursor, selection, &theme);
-                    let mut view = build_raw_index(&rope, &layout);
+                    let view = build_raw_index(&rope, &layout);
                     let mut cache = ViewCache::default();
+                    let line_index = LineIndex::build(&rope);
                     let cursor_line = rope
                         .byte_to_line(cursor)
                         .min(rope.len_lines().saturating_sub(1));
                     let total = view.total_rows();
                     let ours = assemble(
-                        &mut view,
+                        &view,
                         &mut cache,
                         &rope,
                         &layout,
+                        &line_index,
                         cursor_line,
                         selection,
                         30,

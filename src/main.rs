@@ -11,6 +11,7 @@ mod config;
 mod cursor;
 mod history;
 mod layout;
+mod line_index;
 mod markdown;
 #[cfg(test)]
 mod testdoc;
