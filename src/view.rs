@@ -24,7 +24,6 @@ use std::collections::HashMap;
 use std::hash::{DefaultHasher, Hash, Hasher};
 use std::ops::Range;
 use std::rc::Rc;
-use std::time::Instant;
 
 use comrak::nodes::{AstNode, NodeValue};
 use comrak::{Arena, parse_document};
@@ -32,6 +31,7 @@ use ratatui::style::{Color, Style};
 use ratatui::text::Line;
 use ropey::Rope;
 
+use crate::block_index::{BlockIndex, SourceBlock, source_slice};
 use crate::layout::{DisplayLine, Layout};
 use crate::line_index::LineIndex;
 use crate::markdown::{
@@ -135,17 +135,12 @@ const HEIGHTS_CAP: usize = 64 * 1024;
 
 #[derive(Default)]
 pub struct ViewCache {
-    blocks: Vec<SourceBlock>,
-    /// The document's link reference definitions (e.g. `[docs]: url`), one per
-    /// line. Appended to every block's isolated re-parse so `[text][ref]`
-    /// links resolve across blocks; pure definitions render nothing, so the
-    /// appendix never adds rows.
-    ref_defs: String,
-    /// Hash of `ref_defs`, mixed into every block's cache key — a definition
-    /// change re-keys (and so re-renders) every block, exactly as appending
-    /// the defs to the hashed source used to.
-    ref_defs_hash: u64,
-    version: Option<u64>,
+    /// Block boundaries + link reference definitions (e.g. `[docs]: url`).
+    /// Defs are appended to every block's isolated re-parse so `[text][ref]`
+    /// links resolve across blocks (pure definitions render nothing, so the
+    /// appendix never adds rows), and their hash is mixed into every block's
+    /// cache key — a definition change re-keys (re-renders) every block.
+    index: BlockIndex,
     rendered: HashMap<u64, CachedBlock>,
     rendered_bytes: usize,
     /// Rendered height per block, keyed like `rendered` but never cleared with
@@ -177,17 +172,6 @@ pub struct ViewCacheStats {
     pub last_parse_us: u128,
 }
 
-#[derive(Clone)]
-struct SourceBlock {
-    start_line: usize,
-    end_line: usize,
-    start_byte: usize,
-    end_byte: usize,
-    /// Hash of the block's source slice, computed once at partition time so
-    /// per-build cache keys never re-slice or re-hash block text.
-    content_hash: u64,
-}
-
 struct CachedBlock {
     lines: Vec<Line<'static>>,
     /// Per-row source line within the block's slice (1-based), where known.
@@ -197,25 +181,20 @@ struct CachedBlock {
 impl ViewCache {
     pub fn stats(&self) -> ViewCacheStats {
         ViewCacheStats {
-            blocks_total: self.blocks.len(),
+            blocks_total: self.index.blocks().len(),
             rendered_bytes: self.rendered_bytes,
+            last_parse_us: self.index.stats().last_parse_us,
             ..self.stats
         }
     }
 
+    /// Backstop: any version mismatch (first build, or an edit path that
+    /// missed the incremental update) degrades to a full rebuild — never to a
+    /// stale index.
     fn ensure_blocks(&mut self, rope: &Rope, version: u64) {
-        if self.version == Some(version) {
-            return;
+        if !self.index.is_current(version) {
+            self.index.rebuild_full(rope, version);
         }
-        let started = Instant::now();
-        (self.blocks, self.ref_defs) = blocks_from_ast(rope);
-        self.ref_defs_hash = {
-            let mut hasher = DefaultHasher::new();
-            self.ref_defs.hash(&mut hasher);
-            hasher.finish()
-        };
-        self.stats.last_parse_us = started.elapsed().as_micros();
-        self.version = Some(version);
     }
 
     fn cached_block(
@@ -234,7 +213,7 @@ impl ViewCache {
 
         // Only a miss pays for slicing the source out of the rope.
         let mut source = source_slice(rope, block.start_byte, block.end_byte);
-        append_ref_defs(&mut source, &self.ref_defs);
+        append_ref_defs(&mut source, self.index.ref_defs());
         let (lines, sources): (Vec<_>, Vec<_>) =
             render_preview_rows(&source, width, theme, highlighter)
                 .into_iter()
@@ -277,7 +256,7 @@ impl ViewCache {
     fn block_key(&self, block: &SourceBlock, width: usize, theme: &MarkdownTheme) -> u64 {
         block_cache_key(
             block.content_hash,
-            self.ref_defs_hash,
+            self.index.ref_defs_hash(),
             width,
             theme.heading_glyphs,
             theme.hard_breaks,
@@ -370,7 +349,7 @@ pub fn build_preview_index(
         segments: Vec::new(),
         row_starts: vec![0],
     };
-    let blocks = cache.blocks.clone();
+    let blocks = cache.index.blocks().to_vec();
     let mut next_line = 0usize;
     let mut emitted = false;
     for block in &blocks {
@@ -501,7 +480,7 @@ pub fn render_preview_cached(
     let width = width.max(1);
     let total = rope.len_lines();
     let mut out = Vec::new();
-    let blocks = cache.blocks.clone();
+    let blocks = cache.index.blocks().to_vec();
     let mut next_line = 0usize;
     for block in &blocks {
         push_gap_defs(rope, next_line, block.start_line, theme, &mut out);
@@ -614,7 +593,8 @@ pub fn build_full(
         .byte_to_line(cursor_byte)
         .min(total_lines.saturating_sub(1));
     let active_idx = cache
-        .blocks
+        .index
+        .blocks()
         .iter()
         .position(|b| (b.start_line..=b.end_line).contains(&cursor_line));
 
@@ -625,8 +605,8 @@ pub fn build_full(
     let mut active_lines = (cursor_line, cursor_line);
 
     let mut line = 0;
-    let blocks = cache.blocks.clone();
-    let ref_defs = cache.ref_defs.clone();
+    let blocks = cache.index.blocks().to_vec();
+    let ref_defs = cache.index.ref_defs().to_string();
     for (idx, block) in blocks.iter().enumerate() {
         if line < block.start_line {
             push_raw_gap(
@@ -754,7 +734,8 @@ pub fn build_index(
         .byte_to_line(cursor_byte)
         .min(total_lines.saturating_sub(1));
     let active_idx = cache
-        .blocks
+        .index
+        .blocks()
         .iter()
         .position(|b| (b.start_line..=b.end_line).contains(&cursor_line));
 
@@ -767,8 +748,8 @@ pub fn build_index(
     };
 
     let mut line = 0;
-    let blocks = cache.blocks.clone();
-    let ref_defs = cache.ref_defs.clone();
+    let blocks = cache.index.blocks().to_vec();
+    let ref_defs = cache.index.ref_defs().to_string();
     for (idx, block) in blocks.iter().enumerate() {
         if line < block.start_line {
             push_raw_segment(
@@ -1466,100 +1447,6 @@ fn push_raw_gap(
     }
 }
 
-fn blocks_from_ast(rope: &Rope) -> (Vec<SourceBlock>, String) {
-    let total = rope.len_lines();
-    if total == 0 {
-        return (Vec::new(), String::new());
-    }
-    // comrak's parse is the single source of truth for block boundaries, so the
-    // hybrid view and read-mode preview agree and constructs like setext
-    // headings, indented code, and loose lists are grouped exactly as rendered.
-    let source = rope.to_string();
-    let arena = Arena::new();
-    let root = parse_document(&arena, &source, &gfm_options());
-
-    // Map each line to its owning top-level child, then group maximal same-owner
-    // runs into blocks. Unowned lines are blank gaps the caller renders raw.
-    let mut owner: Vec<Option<usize>> = vec![None; total];
-    for (idx, node) in root.children().enumerate() {
-        let sp = node.data.borrow().sourcepos;
-        let start = sp.start.line.saturating_sub(1).min(total - 1);
-        let end = sp.end.line.saturating_sub(1).min(total - 1);
-        for slot in owner.iter_mut().take(end + 1).skip(start) {
-            *slot = Some(idx);
-        }
-    }
-
-    let mut blocks = Vec::new();
-    let mut line = 0;
-    while line < total {
-        let Some(idx) = owner[line] else {
-            line += 1;
-            continue;
-        };
-        let start = line;
-        while line < total && owner[line] == Some(idx) {
-            line += 1;
-        }
-        let end = line - 1;
-        let start_byte = rope.line_to_byte(start);
-        let end_byte = if end + 1 < total {
-            rope.line_to_byte(end + 1)
-        } else {
-            rope.len_bytes()
-        };
-        let content_hash = {
-            let mut hasher = DefaultHasher::new();
-            source[start_byte..end_byte].hash(&mut hasher);
-            hasher.finish()
-        };
-        blocks.push(SourceBlock {
-            start_line: start,
-            end_line: end,
-            start_byte,
-            end_byte,
-            content_hash,
-        });
-    }
-    (blocks, ref_defs_from_gaps(rope, &owner))
-}
-
-/// Collect the document's link reference definitions, one per line.
-///
-/// Definitions never appear in the AST — comrak consumes them into its
-/// refmap — so their lines are exactly the non-blank *unowned* ones. A line is
-/// taken only if it alone re-parses to an empty document, the signature of a
-/// pure definition (a look-alike inside a paragraph or code block is owned and
-/// never reaches the check). Footnote definitions are skipped: appending one
-/// would make it render inside any block that references it.
-fn ref_defs_from_gaps(rope: &Rope, owner: &[Option<usize>]) -> String {
-    // comrak itself decides what qualifies. Footnotes are disabled for the
-    // probe so a `[^name]:` definition parses as a paragraph and is rejected —
-    // appending one would make it render inside any block referencing it.
-    let mut probe_options = gfm_options();
-    probe_options.extension.footnotes = false;
-    let mut out = String::new();
-    for (idx, owned) in owner.iter().enumerate() {
-        if owned.is_some() {
-            continue;
-        }
-        let line = rope.line(idx).to_string();
-        if line.trim().is_empty() {
-            continue;
-        }
-        let arena = Arena::new();
-        if parse_document(&arena, &line, &probe_options)
-            .children()
-            .next()
-            .is_none()
-        {
-            out.push_str(line.trim());
-            out.push('\n');
-        }
-    }
-    out
-}
-
 /// Append the document's reference definitions to a block slice about to be
 /// re-parsed, separated by a blank line so they cannot lazily continue a
 /// trailing paragraph.
@@ -1580,11 +1467,6 @@ fn renders_blank(lines: &[Line<'static>]) -> bool {
     lines
         .iter()
         .all(|l| l.spans.iter().all(|s| s.content.trim().is_empty()))
-}
-
-fn source_slice(rope: &Rope, start: usize, end: usize) -> String {
-    rope.slice(rope.byte_to_char(start)..rope.byte_to_char(end))
-        .to_string()
 }
 
 /// Cache key for a rendered preview block: the block's content hash plus the

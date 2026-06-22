@@ -4,6 +4,7 @@
 //! run the event loop, and always restore the terminal afterwards.
 
 mod app;
+mod block_index;
 mod buffer;
 mod clipboard;
 mod color;
