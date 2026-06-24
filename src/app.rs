@@ -114,7 +114,11 @@ enum Motion {
 struct EditImpact {
     start_line: usize,
     old_line_count: usize,
-    new_line_count: usize,
+    /// Where the replacement text lands; the new line count is derived from
+    /// the post-mutation rope (counting inserted `\n`s would miss the other
+    /// line breaks ropey recognizes — `\r`, VT, FF, NEL, LS, PS).
+    start_byte: usize,
+    inserted_len: usize,
 }
 
 /// Wall-clock durations of the most recent expensive pipeline steps, for the
@@ -410,10 +414,11 @@ impl App {
     pub fn stats_dump(&self) -> String {
         let ms = |us: u128| us as f64 / 1000.0;
         let (timings, cache, layout) = self.debug_stats();
+        let index = self.view_cache.block_stats();
         format!(
             "marqi stats\n\
              \x20 layout: {} rows live · {} rows / {} cells built · last build {:.1}ms\n\
-             \x20 parse:  {} blocks · last partition {:.1}ms\n\
+             \x20 parse:  {} blocks · last full partition {:.1}ms · {} windowed / {} full ({} fallbacks)\n\
              \x20 view:   last build {:.1}ms · last assemble {:.1}ms · {} hits · {} renders · {} clears · {}KB cached",
             layout.rows_live,
             layout.rows_built,
@@ -421,6 +426,9 @@ impl App {
             ms(timings.last_layout_us),
             cache.blocks_total,
             ms(timings.last_parse_us),
+            index.windowed_updates,
+            index.full_rebuilds,
+            index.full_fallbacks,
             ms(timings.last_view_build_us),
             ms(timings.last_assemble_us),
             cache.block_hits,
@@ -1356,7 +1364,8 @@ impl App {
         EditImpact {
             start_line,
             old_line_count: end_line.saturating_sub(start_line) + 1,
-            new_line_count: inserted.bytes().filter(|b| *b == b'\n').count() + 1,
+            start_byte: start,
+            inserted_len: inserted.len(),
         }
     }
 
@@ -1364,6 +1373,14 @@ impl App {
     fn mark_edited(&mut self, impact: EditImpact) {
         self.version += 1;
         self.last_edit = Some(Instant::now());
+        // The replaced span's new line count, from the post-mutation rope so
+        // every line-break form ropey recognizes is counted.
+        let rope = self.buffer.rope();
+        let inserted_end = (impact.start_byte + impact.inserted_len).min(rope.len_bytes());
+        let new_line_count = rope
+            .byte_to_line(inserted_end)
+            .saturating_sub(impact.start_line)
+            + 1;
         // Patch the layout incrementally only when it is current and built for
         // this width; otherwise mark it dirty so `ensure_layout` rebuilds it.
         if !self.layout_dirty && self.layout_width == self.wrap_width {
@@ -1373,16 +1390,23 @@ impl App {
                 self.tab_width,
                 impact.start_line,
                 impact.old_line_count,
-                impact.new_line_count,
+                new_line_count,
             );
         } else {
             self.layout_dirty = true;
         }
-        self.line_index.apply_edit(
+        let update = self.line_index.apply_edit(
             self.buffer.rope(),
             impact.start_line,
             impact.old_line_count,
-            impact.new_line_count,
+            new_line_count,
+        );
+        self.view_cache.apply_edit(
+            self.buffer.rope(),
+            impact.start_line,
+            &update,
+            &self.line_index,
+            self.version,
         );
         self.preview_dirty = true;
     }

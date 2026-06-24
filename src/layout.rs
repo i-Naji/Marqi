@@ -718,15 +718,6 @@ mod tests {
     fn randomized_incremental_updates_match_fresh_builds() {
         use crate::testdoc::{self, XorShift};
 
-        // Pre-mutation edit impact, mirroring `App::edit_impact`.
-        fn impact(rope: &Rope, start: usize, end: usize, inserted: &str) -> (usize, usize, usize) {
-            let start_line = rope.byte_to_line(start);
-            let end_line = rope.byte_to_line(end);
-            let old = end_line - start_line + 1;
-            let new = inserted.bytes().filter(|b| *b == b'\n').count() + 1;
-            (start_line, old, new)
-        }
-
         for seed in [0xA11CE, 0xB0B5EED] {
             let mut rng = XorShift::new(seed);
             let mut rope = Rope::from_str(&testdoc::random_doc(&mut rng, 60));
@@ -735,9 +726,14 @@ mod tests {
 
             for step in 0..50 {
                 let (start, end, text) = testdoc::random_edit(&mut rng, &rope);
-                let (start_line, old, new) = impact(&rope, start, end, &text);
+                // Pre-mutation impact + post-mutation new-line count, exactly
+                // like `App::mark_edited`.
+                let start_line = rope.byte_to_line(start);
+                let old = rope.byte_to_line(end) - start_line + 1;
                 rope.remove(rope.byte_to_char(start)..rope.byte_to_char(end));
                 rope.insert(rope.byte_to_char(start), &text);
+                let inserted_end = (start + text.len()).min(rope.len_bytes());
+                let new = rope.byte_to_line(inserted_end) - start_line + 1;
                 layout.update_after_edit(&rope, width, 4, start_line, old, new);
 
                 let fresh = Layout::build(&rope, width, 4);

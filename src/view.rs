@@ -197,6 +197,24 @@ impl ViewCache {
         }
     }
 
+    pub fn block_stats(&self) -> crate::block_index::BlockIndexStats {
+        self.index.stats()
+    }
+
+    /// Incrementally absorb one edit into the block index (see
+    /// [`BlockIndex::apply_edit`]); called synchronously per buffer mutation.
+    pub fn apply_edit(
+        &mut self,
+        rope: &Rope,
+        start_line: usize,
+        update: &crate::line_index::LineUpdate,
+        lines: &LineIndex,
+        version: u64,
+    ) {
+        self.index
+            .apply_edit(rope, start_line, update, lines, version);
+    }
+
     fn cached_block(
         &mut self,
         rope: &Rope,
