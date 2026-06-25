@@ -206,13 +206,12 @@ impl ViewCache {
     pub fn apply_edit(
         &mut self,
         rope: &Rope,
-        start_line: usize,
+        span: crate::block_index::EditSpan,
         update: &crate::line_index::LineUpdate,
         lines: &LineIndex,
         version: u64,
     ) {
-        self.index
-            .apply_edit(rope, start_line, update, lines, version);
+        self.index.apply_edit(rope, span, update, lines, version);
     }
 
     fn cached_block(

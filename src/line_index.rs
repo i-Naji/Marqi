@@ -31,9 +31,8 @@ pub struct LineUpdate {
     pub touched_flags: u8,
     /// First line at/after the splice whose stored fence state re-converged
     /// (`== rope.len_lines()` when the ripple ran to the end of the document).
-    /// Consumed by the two-sided window seam (lines whose fence state changed
-    /// are dirty for parsing even when their text did not change).
-    #[allow(dead_code)]
+    /// The two-sided window seam treats these as dirty: lines whose fence
+    /// state changed are dirty for parsing even when their text did not.
     pub resynced_at: usize,
 }
 

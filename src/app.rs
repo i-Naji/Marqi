@@ -119,6 +119,7 @@ struct EditImpact {
     /// line breaks ropey recognizes — `\r`, VT, FF, NEL, LS, PS).
     start_byte: usize,
     inserted_len: usize,
+    removed_len: usize,
 }
 
 /// Wall-clock durations of the most recent expensive pipeline steps, for the
@@ -1366,6 +1367,7 @@ impl App {
             old_line_count: end_line.saturating_sub(start_line) + 1,
             start_byte: start,
             inserted_len: inserted.len(),
+            removed_len: end - start,
         }
     }
 
@@ -1403,7 +1405,12 @@ impl App {
         );
         self.view_cache.apply_edit(
             self.buffer.rope(),
-            impact.start_line,
+            crate::block_index::EditSpan {
+                start_line: impact.start_line,
+                old_line_count: impact.old_line_count,
+                new_line_count,
+                byte_delta: impact.inserted_len as isize - impact.removed_len as isize,
+            },
             &update,
             &self.line_index,
             self.version,

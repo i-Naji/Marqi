@@ -59,12 +59,26 @@ pub enum BlockKind {
     Other,
 }
 
+/// The shape of one buffer edit, in the same pre-mutation coordinates as
+/// `Layout::update_after_edit` (plus the byte delta for suffix shifting).
+#[derive(Clone, Copy)]
+pub struct EditSpan {
+    pub start_line: usize,
+    pub old_line_count: usize,
+    pub new_line_count: usize,
+    /// `inserted_len - removed_len`.
+    pub byte_delta: isize,
+}
+
 #[derive(Default, Clone, Copy)]
 pub struct BlockIndexStats {
     /// Whole-document reparses (first build, fallbacks, backstop).
     pub full_rebuilds: usize,
     /// Edits absorbed by a windowed reparse.
     pub windowed_updates: usize,
+    /// Two-sided windows whose post-parse invariants failed, forcing a wider
+    /// attempt or the tail window.
+    pub windows_grown: usize,
     /// Windowed attempts that gave up (no sound seam within the search cap).
     pub full_fallbacks: usize,
     /// Duration of the last whole-document partition.
@@ -147,29 +161,40 @@ impl BlockIndex {
         self.full_floor_bytes = bytes;
     }
 
-    /// Incrementally absorb one edit, reparsing only `[U .. end-of-document]`
-    /// for a sound upper seam `U` — or falling back to a full reparse whenever
-    /// safety cannot be proven. Trigger list:
+    /// Incrementally absorb one edit, reparsing only a window around the
+    /// dirty lines — `[U, V]` between two sound blank seams when possible,
+    /// `[U, end-of-document]` otherwise — or falling back to a full reparse
+    /// whenever safety cannot be proven. Trigger list:
     ///
     /// - the index is not exactly one version behind (missed edit) → mark
     ///   stale and let the `ensure_blocks` backstop rebuild;
     /// - document below the size floor → full (trivially-correct path);
     /// - the edit touched footnote or definition-shaped lines (pre or post) →
     ///   full (both have document-global effects);
-    /// - footnote syntax anywhere in the window → full (a definition whose
-    ///   reference lives outside the window parses differently in isolation);
-    /// - no sound seam within the search cap → full.
+    /// - footnote syntax anywhere in the window → widen to the tail or full
+    ///   (a definition whose reference lives outside the window parses
+    ///   differently in isolation);
+    /// - no sound seam within the search caps → full.
     ///
-    /// Seam soundness: `U == 0`, or `U` is a pre-edit *gap* blank line (so no
-    /// open fence/HTML/list interior spans it — those lines are owned) whose
-    /// preceding block cannot continue downward across a blank (lists,
-    /// indented code, and footnote definitions can; everything else needs
-    /// adjacency). Lines above the dirty block are byte-identical pre/post
-    /// edit, so the parser state entering `U` is unchanged and fresh.
+    /// Upper seam soundness: `U == 0`, or `U` is a pre-edit *gap* blank line
+    /// (no open fence/HTML/loose-list interior spans it — those lines are
+    /// owned) whose preceding block cannot continue downward across a blank
+    /// (lists, indented code, and footnote definitions can; everything else
+    /// needs adjacency). Lines above the dirty block are byte-identical
+    /// pre/post edit, so the parser state entering `U` is unchanged and fresh.
+    ///
+    /// Lower seam soundness: `V` is a blank line that was a pre-edit gap, the
+    /// windowed parse leaves it unowned (an unclosed fence or HTML block
+    /// would run into it), and the window's last block cannot absorb text
+    /// across a blank — both checked *after* parsing, with window growth and
+    /// then the tail window as fallbacks. The suffix blocks below `V` then
+    /// reparse from the same closed, fresh state as before the edit, so the
+    /// old entries are reused verbatim (shifted by the edit's line and byte
+    /// deltas).
     pub fn apply_edit(
         &mut self,
         rope: &Rope,
-        start_line: usize,
+        span: EditSpan,
         update: &LineUpdate,
         lines: &LineIndex,
         new_version: u64,
@@ -192,7 +217,7 @@ impl BlockIndex {
         }
 
         let total = rope.len_lines();
-        let start_line = start_line.min(total.saturating_sub(1));
+        let start_line = span.start_line.min(total.saturating_sub(1));
         // Blocks reparse whole or not at all: the window starts at or above
         // the start of the pre-edit block containing the first dirty line.
         let dirty_start = match self.block_at_line(start_line) {
@@ -203,13 +228,121 @@ impl BlockIndex {
             self.stats.full_fallbacks += 1;
             return self.rebuild_full(rope, new_version);
         };
+
+        // Everything at/after this line is dirty for parsing: the edited
+        // lines themselves, plus any lines whose fence state changed.
+        let line_delta = span.new_line_count as isize - span.old_line_count as isize;
+        let dirty_end = (start_line + span.new_line_count)
+            .max(update.resynced_at)
+            .saturating_sub(1);
+
+        // Two-sided attempts, skipping further down after each failure.
+        let mut from = dirty_end + 1;
+        for attempt in 0..3 {
+            let Some(v) = self.lower_seam(from, line_delta, lines, total) else {
+                break;
+            };
+            if lines.any_flags_in(seam..v + 1, line_index::FOOTNOTE) {
+                break; // footnotes in reach: decide between tail and full below
+            }
+            if self
+                .try_window(rope, seam, v, line_delta, span.byte_delta, new_version)
+                .is_ok()
+            {
+                self.stats.windowed_updates += 1;
+                return;
+            }
+            self.stats.windows_grown += 1;
+            from = v + 1 + SEAM_SEARCH_LINES * (attempt + 1);
+        }
+
+        // Tail window [seam, end): correct whenever the upper seam is.
         if lines.any_flags_in(seam..total, line_index::FOOTNOTE) {
             self.stats.full_fallbacks += 1;
             return self.rebuild_full(rope, new_version);
         }
+        self.window_tail(rope, seam, new_version);
+        self.stats.windowed_updates += 1;
+    }
 
+    /// Parse `[seam, v]` (inclusive of the blank seam line `v`) and splice it
+    /// between the untouched prefix and the shifted suffix — or report that
+    /// the lower seam is unsound.
+    fn try_window(
+        &mut self,
+        rope: &Rope,
+        seam: usize,
+        v: usize,
+        line_delta: isize,
+        byte_delta: isize,
+        new_version: u64,
+    ) -> Result<(), ()> {
+        let total = rope.len_lines();
         let seam_byte = rope.line_to_byte(seam);
-        // Re-deriving the tail through a temporary rope reuses the exact
+        let end_byte = if v + 1 < total {
+            rope.line_to_byte(v + 1)
+        } else {
+            rope.len_bytes()
+        };
+        let window = Rope::from_str(&source_slice(rope, seam_byte, end_byte));
+        let (mut blocks, defs) = parse_blocks(&window);
+
+        if let Some(last) = blocks.last() {
+            // An unclosed fence/HTML block runs into the trailing blank...
+            if seam + last.end_line >= v {
+                return Err(());
+            }
+            // ...and these kinds can absorb suffix text across the blank.
+            if open_below(last.kind) {
+                return Err(());
+            }
+        }
+
+        for block in &mut blocks {
+            block.start_line += seam;
+            block.end_line += seam;
+            block.start_byte += seam_byte;
+            block.end_byte += seam_byte;
+        }
+        let pre_v = v.saturating_add_signed(-line_delta);
+
+        let mut rebuilt = Vec::with_capacity(self.blocks.len() + blocks.len());
+        rebuilt.extend(self.blocks.iter().filter(|b| b.end_line < seam).cloned());
+        rebuilt.extend(blocks);
+        rebuilt.extend(
+            self.blocks
+                .iter()
+                .filter(|b| b.start_line > pre_v)
+                .map(|b| {
+                    let mut block = b.clone();
+                    block.start_line = block.start_line.saturating_add_signed(line_delta);
+                    block.end_line = block.end_line.saturating_add_signed(line_delta);
+                    block.start_byte = block.start_byte.saturating_add_signed(byte_delta);
+                    block.end_byte = block.end_byte.saturating_add_signed(byte_delta);
+                    block
+                }),
+        );
+        self.blocks = rebuilt;
+
+        let after_seam = self.defs.split_off(&seam);
+        for (line, def) in defs {
+            self.defs.insert(line + seam, def);
+        }
+        for (line, def) in after_seam {
+            if line > pre_v {
+                self.defs
+                    .insert(line.saturating_add_signed(line_delta), def);
+            }
+        }
+        self.rebuild_ref_defs();
+        self.version = Some(new_version);
+        Ok(())
+    }
+
+    /// Reparse `[seam, end-of-document)` and splice it after the prefix.
+    fn window_tail(&mut self, rope: &Rope, seam: usize, new_version: u64) {
+        let seam_byte = rope.line_to_byte(seam);
+        // Re-deriving through a temporary rope reuses the exact
         // whole-document machinery (`parse_blocks`), so the windowed result
         // can only differ from a full parse if the seam itself is unsound.
         let window = Rope::from_str(&source_slice(rope, seam_byte, rope.len_bytes()));
@@ -229,7 +362,32 @@ impl BlockIndex {
         }
         self.rebuild_ref_defs();
         self.version = Some(new_version);
-        self.stats.windowed_updates += 1;
+    }
+
+    /// First sound lower seam at or after `from`: a blank line that was a
+    /// pre-edit gap (post-parse invariants are checked by `try_window`).
+    fn lower_seam(
+        &self,
+        from: usize,
+        line_delta: isize,
+        lines: &LineIndex,
+        total: usize,
+    ) -> Option<usize> {
+        let to = from.saturating_add(SEAM_SEARCH_LINES).min(total);
+        for v in from..to {
+            if lines.flags_at(v) & line_index::BLANK == 0 {
+                continue;
+            }
+            let pre_v = v as isize - line_delta;
+            if pre_v < 0 {
+                continue;
+            }
+            if self.block_at_line(pre_v as usize).is_some() {
+                continue; // owned blank pre-edit (fence/HTML/loose-list interior)
+            }
+            return Some(v);
+        }
+        None
     }
 
     /// Sound one-sided seam at or above `dirty_start` (see [`Self::apply_edit`]).
@@ -360,6 +518,21 @@ fn open_above_gap(kind: BlockKind) -> bool {
     )
 }
 
+/// As the last block of a two-sided window: can it absorb text below across
+/// the trailing blank seam? Lists and indented code reach through blanks;
+/// fenced code and HTML are listed defensively (an unclosed one already fails
+/// the unowned-seam invariant by running into the blank).
+fn open_below(kind: BlockKind) -> bool {
+    matches!(
+        kind,
+        BlockKind::List
+            | BlockKind::IndentedCode
+            | BlockKind::FencedCode
+            | BlockKind::Html
+            | BlockKind::FootnoteDef
+    )
+}
+
 fn block_kind(value: &NodeValue) -> BlockKind {
     match value {
         NodeValue::Paragraph => BlockKind::Paragraph,
@@ -470,8 +643,14 @@ mod fuzz {
             let new = self.rope.byte_to_line(inserted_end) - start_line + 1;
             self.version += 1;
             let update = self.lines.apply_edit(&self.rope, start_line, old, new);
+            let span = EditSpan {
+                start_line,
+                old_line_count: old,
+                new_line_count: new,
+                byte_delta: text.len() as isize - (end - start) as isize,
+            };
             self.index
-                .apply_edit(&self.rope, start_line, &update, &self.lines, self.version);
+                .apply_edit(&self.rope, span, &update, &self.lines, self.version);
         }
 
         fn assert_matches_oracle(&self, context: &str) {
