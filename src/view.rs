@@ -133,7 +133,6 @@ const RENDER_CACHE_LIMIT_BYTES: usize = 4 * 1024 * 1024;
 /// Entry cap for the block-height memo (~24B each, so worst case ~1.5MB).
 const HEIGHTS_CAP: usize = 64 * 1024;
 
-#[derive(Default)]
 pub struct ViewCache {
     /// Block boundaries + link reference definitions (e.g. `[docs]: url`).
     /// Defs are appended to every block's isolated re-parse so `[text][ref]`
@@ -143,11 +142,33 @@ pub struct ViewCache {
     index: BlockIndex,
     rendered: HashMap<u64, CachedBlock>,
     rendered_bytes: usize,
-    /// Rendered height per block, keyed like `rendered` but never cleared with
-    /// it — the row index must stay computable without re-rendering evicted
-    /// blocks, and only an edited block's key (and thus height) changes.
-    heights: HashMap<u64, BlockHeight>,
+    render_budget: usize,
+    /// Frame tick, bumped once per draw; pins everything that frame touched.
+    tick: u64,
+    /// Rendered height per block, bucketed by wrap width (only the current
+    /// and previous widths are retained — a resize bounce stays cheap, stale
+    /// widths don't accumulate) and keyed like `rendered`, but never evicted
+    /// with it — the row index must stay computable without re-rendering
+    /// evicted blocks, and only an edited block's key (and height) changes.
+    heights: HashMap<usize, HashMap<u64, BlockHeight>>,
+    /// `(current, previous)` wrap widths backing `heights`.
+    recent_widths: (usize, usize),
     stats: ViewCacheStats,
+}
+
+impl Default for ViewCache {
+    fn default() -> Self {
+        Self {
+            index: BlockIndex::default(),
+            rendered: HashMap::new(),
+            rendered_bytes: 0,
+            render_budget: RENDER_CACHE_LIMIT_BYTES,
+            tick: 0,
+            heights: HashMap::new(),
+            recent_widths: (0, 0),
+            stats: ViewCacheStats::default(),
+        }
+    }
 }
 
 /// Rendered size of a block: its row count, and whether every row is blank
@@ -166,8 +187,11 @@ pub struct ViewCacheStats {
     pub blocks_total: usize,
     /// Bytes currently held by the rendered-block cache (snapshot).
     pub rendered_bytes: usize,
-    /// Times the rendered-block cache was cleared for exceeding its budget.
+    /// Times the rendered-block cache was cleared for exceeding its budget
+    /// (now: height-bucket clears; the render cache evicts instead).
     pub cache_clears: usize,
+    /// Cold entries evicted from the render cache to stay within budget.
+    pub evictions: usize,
     /// Duration of the last whole-document block partition (`blocks_from_ast`).
     pub last_parse_us: u128,
 }
@@ -176,6 +200,11 @@ struct CachedBlock {
     lines: Vec<Line<'static>>,
     /// Per-row source line within the block's slice (1-based), where known.
     sources: Vec<Option<usize>>,
+    /// Honest footprint of this entry (structs + span text + map overhead).
+    bytes: usize,
+    /// Frame tick of the last touch; entries touched in the current frame
+    /// (visible, overscan, active) are never evicted.
+    last_used: u64,
 }
 
 impl ViewCache {
@@ -214,6 +243,13 @@ impl ViewCache {
         self.index.apply_edit(rope, span, update, lines, version);
     }
 
+    /// Bump the frame tick. The UI calls this once per draw; everything the
+    /// frame then touches (visible blocks, overscan, the active block's
+    /// neighbours) carries the new tick and is exempt from eviction.
+    pub fn begin_frame(&mut self) {
+        self.tick += 1;
+    }
+
     fn cached_block(
         &mut self,
         rope: &Rope,
@@ -223,7 +259,9 @@ impl ViewCache {
         highlighter: &CodeHighlighter,
     ) -> (Vec<Line<'static>>, Vec<Option<usize>>) {
         let key = self.block_key(block, width, theme);
-        if let Some(cached) = self.rendered.get(&key) {
+        let tick = self.tick;
+        if let Some(cached) = self.rendered.get_mut(&key) {
+            cached.last_used = tick;
             self.stats.block_hits += 1;
             return (cached.lines.clone(), cached.sources.clone());
         }
@@ -236,36 +274,78 @@ impl ViewCache {
                 .into_iter()
                 .map(|row| (row.line, row.source))
                 .unzip();
-        let bytes = rendered_size(&lines);
-        if self.rendered_bytes + bytes > RENDER_CACHE_LIMIT_BYTES {
-            self.rendered.clear();
-            self.rendered_bytes = 0;
-            self.stats.cache_clears += 1;
+        let bytes = entry_size(&lines, &sources);
+        if self.rendered_bytes + bytes > self.render_budget {
+            self.evict_cold(bytes);
         }
+        // Even a single over-budget block is inserted: it is what the frame
+        // needs right now, and the next eviction pass reclaims it.
         self.rendered_bytes += bytes;
-        self.record_height(key, &lines);
+        self.record_height(key, width, &lines);
         self.rendered.insert(
             key,
             CachedBlock {
                 lines: lines.clone(),
                 sources: sources.clone(),
+                bytes,
+                last_used: tick,
             },
         );
         self.stats.block_renders += 1;
         (lines, sources)
     }
 
-    fn record_height(&mut self, key: u64, lines: &[Line<'static>]) {
-        if self.heights.len() >= HEIGHTS_CAP {
-            self.heights.clear();
+    /// Evict cold entries (not touched this frame), oldest tick first, until
+    /// `incoming` fits the budget. Replaces the old clear-all behaviour: a
+    /// burst past the budget now costs the coldest blocks, not the screen.
+    fn evict_cold(&mut self, incoming: usize) {
+        let mut cold: Vec<(u64, u64, usize)> = self
+            .rendered
+            .iter()
+            .filter(|(_, entry)| entry.last_used < self.tick)
+            .map(|(key, entry)| (entry.last_used, *key, entry.bytes))
+            .collect();
+        cold.sort_unstable();
+        for (_, key, bytes) in cold {
+            if self.rendered_bytes + incoming <= self.render_budget {
+                break;
+            }
+            self.rendered.remove(&key);
+            self.rendered_bytes -= bytes;
+            self.stats.evictions += 1;
         }
-        self.heights.insert(
+    }
+
+    #[cfg(test)]
+    fn set_render_budget(&mut self, bytes: usize) {
+        self.render_budget = bytes;
+    }
+
+    fn record_height(&mut self, key: u64, width: usize, lines: &[Line<'static>]) {
+        self.touch_width(width);
+        let bucket = self.heights.entry(width).or_default();
+        if bucket.len() >= HEIGHTS_CAP {
+            bucket.clear();
+            self.stats.cache_clears += 1;
+        }
+        bucket.insert(
             key,
             BlockHeight {
                 rows: lines.len() as u32,
                 blank: renders_blank(lines),
             },
         );
+    }
+
+    /// Keep height buckets only for the current and previous wrap widths, so
+    /// a resize bounce re-measures nothing while stale widths are dropped.
+    fn touch_width(&mut self, width: usize) {
+        if self.recent_widths.0 == width {
+            return;
+        }
+        let previous = self.recent_widths.0;
+        self.recent_widths = (width, previous);
+        self.heights.retain(|w, _| *w == width || *w == previous);
     }
 
     /// Cache key for one block at the current width/theme — pure integer
@@ -291,16 +371,15 @@ impl ViewCache {
         highlighter: &CodeHighlighter,
     ) -> BlockHeight {
         let key = self.block_key(block, width, theme);
-        if let Some(height) = self.heights.get(&key) {
+        if let Some(height) = self.heights.get(&width).and_then(|b| b.get(&key)) {
             return *height;
         }
+        // The miss renders once, which records the height too.
         let (lines, _) = self.cached_block(rope, block, width, theme, highlighter);
-        let height = BlockHeight {
+        BlockHeight {
             rows: lines.len() as u32,
             blank: renders_blank(&lines),
-        };
-        self.heights.insert(key, height);
-        height
+        }
     }
 }
 
@@ -1511,12 +1590,24 @@ fn block_cache_key(
     hasher.finish()
 }
 
-fn rendered_size(lines: &[Line<'static>]) -> usize {
-    lines
+/// Honest footprint of one cache entry: row/span structs, span text, the
+/// source labels, and an approximation of the map-entry overhead. (The old
+/// accounting counted span text alone — a 2-4x undercount that made the
+/// nominal budget meaningless.)
+fn entry_size(lines: &[Line<'static>], sources: &[Option<usize>]) -> usize {
+    use ratatui::text::Span;
+    let spans: usize = lines.iter().map(|line| line.spans.len()).sum();
+    let content: usize = lines
         .iter()
         .flat_map(|line| line.spans.iter())
         .map(|span| span.content.len())
-        .sum()
+        .sum();
+    std::mem::size_of_val(lines)
+        + spans * std::mem::size_of::<Span>()
+        + content
+        + std::mem::size_of_val(sources)
+        + std::mem::size_of::<CachedBlock>()
+        + 48
 }
 
 /// The block to render raw: for a top-level list, the *direct* item the cursor
@@ -2405,6 +2496,90 @@ mod tests {
                 assert_eq!(window.as_slice(), &oracle[2..5], "window (doc {doc_idx})");
             }
         }
+    }
+
+    /// LRU eviction: cold entries go oldest-tick-first, entries touched in
+    /// the current frame are never evicted, and the byte accounting stays
+    /// exact across churn.
+    #[test]
+    fn render_cache_evicts_cold_entries_within_budget() {
+        let src = crate::testdoc::many_blocks(60);
+        let rope = Rope::from_str(&src);
+        let theme = MarkdownTheme::default();
+        let hl = CodeHighlighter::new(None);
+        let mut cache = ViewCache::default();
+        cache.ensure_blocks(&rope, 0);
+        let blocks: Vec<SourceBlock> = cache.index.blocks().to_vec();
+        assert!(blocks.len() >= 40, "corpus has plenty of blocks");
+
+        // Frame 1: render the first half.
+        cache.begin_frame();
+        for block in &blocks[..30] {
+            let _ = cache.cached_block(&rope, block, 60, &theme, &hl);
+        }
+        let accounted: usize = cache.rendered.values().map(|e| e.bytes).sum();
+        assert_eq!(
+            cache.rendered_bytes, accounted,
+            "byte accounting matches the entries"
+        );
+
+        // Frame 2: a tiny budget forces eviction; the blocks this frame
+        // touches must survive while frame-1 entries are reclaimed.
+        let keep: Vec<u64> = blocks[30..40]
+            .iter()
+            .map(|b| cache.block_key(b, 60, &theme))
+            .collect();
+        cache.set_render_budget(1);
+        cache.begin_frame();
+        for block in &blocks[30..40] {
+            let _ = cache.cached_block(&rope, block, 60, &theme, &hl);
+        }
+        assert!(
+            cache.stats().evictions > 0,
+            "over budget, cold entries were evicted"
+        );
+        for key in &keep {
+            assert!(
+                cache.rendered.contains_key(key),
+                "current-frame entries are pinned"
+            );
+        }
+        let accounted: usize = cache.rendered.values().map(|e| e.bytes).sum();
+        assert_eq!(cache.rendered_bytes, accounted, "accounting after churn");
+        // Heights stayed intact through all of it.
+        let height = cache.block_height(&rope, &blocks[0], 60, &theme, &hl);
+        assert!(height.rows > 0);
+    }
+
+    /// Height buckets are retained only for the current and previous widths.
+    #[test]
+    fn height_buckets_keep_current_and_previous_widths() {
+        let src = crate::testdoc::many_blocks(6);
+        let rope = Rope::from_str(&src);
+        let theme = MarkdownTheme::default();
+        let hl = CodeHighlighter::new(None);
+        let mut cache = ViewCache::default();
+        cache.ensure_blocks(&rope, 0);
+        let block = cache.index.blocks()[0].clone();
+
+        for width in [40, 60, 80, 100] {
+            let _ = cache.block_height(&rope, &block, width, &theme, &hl);
+        }
+        assert!(
+            cache.heights.len() <= 2,
+            "only current+previous width buckets survive, got {:?}",
+            cache.heights.keys().collect::<Vec<_>>()
+        );
+        assert!(cache.heights.contains_key(&100), "current width retained");
+        assert!(cache.heights.contains_key(&80), "previous width retained");
+        // Bouncing back to the previous width re-measures nothing.
+        let renders = cache.stats().block_renders;
+        let _ = cache.block_height(&rope, &block, 80, &theme, &hl);
+        assert_eq!(
+            cache.stats().block_renders,
+            renders,
+            "resize bounce is free"
+        );
     }
 
     /// Heights survive render-cache eviction: the row index stays computable

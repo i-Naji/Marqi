@@ -443,6 +443,8 @@ impl App {
     pub fn set_viewport(&mut self, width: usize, height: usize) {
         self.wrap_width = width.max(1);
         self.viewport_height = height;
+        // New frame: everything this draw touches is pinned against eviction.
+        self.view_cache.begin_frame();
         self.ensure_layout();
         if self.mode.is_read() {
             self.ensure_preview();
