@@ -121,7 +121,7 @@ fn render_to_stdout(path: &str, config_path: Option<&std::path::Path>) -> Result
     if let Some(warning) = warning {
         eprintln!("{warning}");
     }
-    let mut theme = MarkdownTheme::from_variant(&cfg.theme.variant);
+    let mut theme = MarkdownTheme::select(&cfg.theme.name, &cfg.theme.variant);
     theme.heading_glyphs = cfg.editor.heading_glyphs;
     theme.hard_breaks = cfg.editor.soft_break.trim().eq_ignore_ascii_case("break");
     theme.apply_overrides(&cfg.theme.markdown);

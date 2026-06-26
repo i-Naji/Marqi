@@ -773,8 +773,8 @@ fn empty_checkbox_renders_as_a_glyph_in_preview() {
         .map(|l| l.spans.iter().map(|s| s.content.as_ref()).collect())
         .collect();
     assert!(
-        rows.iter().any(|r| r.trim() == "\u{2610}"),
-        "empty checkbox should show ☐:\n{rows:?}"
+        rows.iter().any(|r| r.trim() == "\u{25a1}"),
+        "empty checkbox should show □:\n{rows:?}"
     );
 }
 

@@ -37,17 +37,44 @@ pub struct CodeHighlighter {
     cache: RefCell<HashMap<(String, String, usize), Vec<HighlightedRow>>>,
 }
 
+/// Canonical `.tmTheme` ports bundled for the named palette families (see
+/// `MarkdownTheme::default_syntax_theme`). Embedded at build time; only the
+/// selected one is ever parsed, so the cost is a sub-millisecond one-time
+/// plist parse for one theme.
+fn bundled_theme(name: &str) -> Option<&'static [u8]> {
+    let bytes: &'static [u8] = match name {
+        "catppuccin-mocha" => include_bytes!("syntax_themes/catppuccin-mocha.tmTheme"),
+        "catppuccin-latte" => include_bytes!("syntax_themes/catppuccin-latte.tmTheme"),
+        "tokyonight-night" => include_bytes!("syntax_themes/tokyonight-night.tmTheme"),
+        "tokyonight-day" => include_bytes!("syntax_themes/tokyonight-day.tmTheme"),
+        "onehalf-dark" => include_bytes!("syntax_themes/onehalf-dark.tmTheme"),
+        "onehalf-light" => include_bytes!("syntax_themes/onehalf-light.tmTheme"),
+        "gruvbox-dark" => include_bytes!("syntax_themes/gruvbox-dark.tmTheme"),
+        "gruvbox-light" => include_bytes!("syntax_themes/gruvbox-light.tmTheme"),
+        "dracula" => include_bytes!("syntax_themes/dracula.tmTheme"),
+        "nord" => include_bytes!("syntax_themes/nord.tmTheme"),
+        _ => return None,
+    };
+    Some(bytes)
+}
+
 impl CodeHighlighter {
-    /// Build a highlighter using the named syntect theme (falling back to a
-    /// sensible default when `name` is `None` or unknown).
+    /// Build a highlighter using the named syntect theme — a bundled port, or
+    /// one of syntect's defaults — falling back to a sensible default when
+    /// `name` is `None` or unknown.
     pub fn new(name: Option<&str>) -> Self {
         let syntax_set = SyntaxSet::load_defaults_newlines();
         let theme_set = ThemeSet::load_defaults();
         let theme = name
-            .and_then(|n| theme_set.themes.get(n))
-            .or_else(|| theme_set.themes.get("base16-ocean.dark"))
-            .or_else(|| theme_set.themes.values().next())
-            .cloned()
+            .and_then(|n| {
+                bundled_theme(n)
+                    .and_then(|bytes| {
+                        ThemeSet::load_from_reader(&mut std::io::Cursor::new(bytes)).ok()
+                    })
+                    .or_else(|| theme_set.themes.get(n).cloned())
+            })
+            .or_else(|| theme_set.themes.get("base16-ocean.dark").cloned())
+            .or_else(|| theme_set.themes.values().next().cloned())
             .expect("syntect ships default themes");
         let bg = theme
             .settings
@@ -168,5 +195,63 @@ impl CodeHighlighter {
             style = style.add_modifier(Modifier::UNDERLINED);
         }
         style
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::markdown::MarkdownTheme;
+    use crate::markdown::theme::{ThemeName, ThemeVariant};
+
+    const BUNDLED: [&str; 10] = [
+        "catppuccin-mocha",
+        "catppuccin-latte",
+        "tokyonight-night",
+        "tokyonight-day",
+        "onehalf-dark",
+        "onehalf-light",
+        "gruvbox-dark",
+        "gruvbox-light",
+        "dracula",
+        "nord",
+    ];
+
+    #[test]
+    fn every_bundled_theme_parses() {
+        for name in BUNDLED {
+            let bytes = bundled_theme(name).expect("bundled");
+            let theme = ThemeSet::load_from_reader(&mut std::io::Cursor::new(bytes))
+                .unwrap_or_else(|e| panic!("{name}: invalid tmTheme: {e}"));
+            assert!(
+                theme.settings.background.is_some(),
+                "{name}: a code theme needs a background"
+            );
+        }
+    }
+
+    #[test]
+    fn every_palette_pairing_resolves_and_highlights() {
+        for name in [
+            ThemeName::Marqi,
+            ThemeName::OneDark,
+            ThemeName::Github,
+            ThemeName::Catppuccin,
+            ThemeName::TokyoNight,
+            ThemeName::Gruvbox,
+            ThemeName::Nord,
+            ThemeName::Dracula,
+            ThemeName::Solarized,
+        ] {
+            for variant in [ThemeVariant::Dark, ThemeVariant::Light] {
+                let pairing = MarkdownTheme::named(name, variant).default_syntax_theme();
+                let hl = CodeHighlighter::new(Some(pairing));
+                let rows = hl.highlight("rust", "fn main() { let x = 1; }\n", 40);
+                assert!(
+                    !rows.is_empty(),
+                    "{name:?}/{variant:?} via {pairing:?} highlights"
+                );
+            }
+        }
     }
 }

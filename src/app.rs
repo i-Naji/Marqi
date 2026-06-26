@@ -316,7 +316,7 @@ impl App {
         app.scrolloff = config.editor.scrolloff;
         app.left_margin = config.editor.left_margin;
         app.auto_save = config.editor.auto_save;
-        app.theme = MarkdownTheme::from_variant(&config.theme.variant);
+        app.theme = MarkdownTheme::select(&config.theme.name, &config.theme.variant);
         app.theme.heading_glyphs = config.editor.heading_glyphs;
         app.theme.hard_breaks = config
             .editor

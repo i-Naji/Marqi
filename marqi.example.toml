@@ -25,12 +25,28 @@ tab_width = 4
 scrolloff = 3
 
 [theme]
-# Built-in editor palette: "auto", "dark", or "light".
-# Auto checks MARQI_THEME, TERMINAL_THEME, THEME, and COLORFGBG, then falls
-# back to dark if the terminal does not provide a useful hint.
+# Palette family. "default" (or unset) picks the most popular face per mode:
+# One Dark when dark, GitHub when light. Every family has both a dark and a
+# light face, chosen by `variant` below.
+#   "default"     One Dark (dark) / GitHub (light)
+#   "marqi"       the original marqi palette
+#   "onedark"     Atom One Dark / One Light
+#   "github"      GitHub (Primer) dark / light
+#   "catppuccin"  Catppuccin Mocha / Latte
+#   "tokyonight"  Tokyo Night / Day
+#   "gruvbox"     Gruvbox dark / light
+#   "nord"        Nord (Polar Night / Snow Storm)
+#   "dracula"     Dracula / Alucard-style light
+#   "solarized"   Solarized dark / light
+name = "default"
+# Light or dark face of the palette: "auto", "dark", or "light".
+# Auto asks the terminal for its background (OSC 11) and checks MARQI_THEME,
+# TERMINAL_THEME, THEME, and COLORFGBG, then falls back to dark.
 variant = "auto"
-# Optional syntect theme override for fenced code blocks. Leave this unset to
-# use "base16-ocean.dark" for dark mode or "InspiredGitHub" for light mode.
+# Optional syntect theme override for fenced code blocks. Each palette family
+# pairs with a matching bundled theme automatically ("catppuccin-mocha",
+# "tokyonight-day", "gruvbox-dark", "dracula", "nord", "onehalf-dark", ...);
+# set this to force a specific one.
 # syntax = "base16-ocean.dark"
 # syntax = "InspiredGitHub"
 
