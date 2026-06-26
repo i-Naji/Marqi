@@ -792,6 +792,31 @@ mod fuzz {
         }
     }
 
+    /// Extended soak, not a CI test:
+    /// `cargo test --release soak -- --ignored --nocapture`
+    #[test]
+    #[ignore = "manual soak; run with --release --ignored --nocapture"]
+    fn soak_thousands_of_edits_stay_oracle_exact() {
+        for seed in 0xBEEF..0xBEEF + 4u64 {
+            let mut rng = XorShift::new(seed);
+            let src = engagement_doc(&mut rng, 400);
+            let mut h = Harness::new(&src);
+            for step in 0..2_000 {
+                let (start, end, text) = random_op(&mut rng, &h.rope);
+                h.splice(start, end, &text);
+                h.assert_matches_oracle(&format!("soak seed {seed:#x} step {step}"));
+            }
+            let stats = h.index.stats();
+            eprintln!(
+                "soak seed {seed:#x}: {} windowed, {} full ({} grown, {} fallbacks)",
+                stats.windowed_updates,
+                stats.full_rebuilds,
+                stats.windows_grown,
+                stats.full_fallbacks
+            );
+        }
+    }
+
     #[test]
     fn hazard_documents_stay_correct_under_random_edits() {
         let mut docs = vec![
