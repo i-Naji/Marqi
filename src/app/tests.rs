@@ -417,14 +417,56 @@ fn config_selects_preset_settings_and_theme() {
 }
 
 #[test]
-fn help_toggles_from_ctrl_g_and_vim_question_mark() {
+fn menu_opens_from_ctrl_g_and_vim_question_mark() {
     let mut a = vim_app();
     press_mod(&mut a, KeyCode::Char('g'), KeyModifiers::CONTROL);
-    assert!(a.help_open);
-    press(&mut a, KeyCode::Esc);
-    assert!(!a.help_open);
+    assert!(a.menu_open());
+    // Enter accepts and closes.
+    press(&mut a, KeyCode::Enter);
+    assert!(!a.menu_open());
+    // Vim normal `?` reopens; Esc closes.
     press(&mut a, KeyCode::Char('?'));
-    assert!(a.help_open);
+    assert!(a.menu_open());
+    press(&mut a, KeyCode::Esc);
+    assert!(!a.menu_open());
+}
+
+#[test]
+fn menu_switches_theme_appearance_and_preset_live_with_esc_revert() {
+    use crate::markdown::ThemeVariant;
+    let mut a = app_with("# Title\n\nbody\n");
+    let orig_name = a.theme().name;
+    let orig_variant = a.theme().variant;
+
+    press_mod(&mut a, KeyCode::Char('g'), KeyModifiers::CONTROL);
+    // Row 0 (Keybindings): Right cycles the preset.
+    press(&mut a, KeyCode::Right);
+    assert_ne!(
+        a.preset(),
+        Preset::Standard,
+        "keybindings row cycles preset"
+    );
+
+    // Row 1 (Theme): Down to it, Right to the next family.
+    press(&mut a, KeyCode::Down);
+    press(&mut a, KeyCode::Right);
+    assert_ne!(a.theme().name, orig_name, "theme applies live");
+
+    // Row 2 (Appearance): Down, Right toggles dark/light.
+    press(&mut a, KeyCode::Down);
+    press(&mut a, KeyCode::Right);
+    assert_ne!(a.theme().variant, orig_variant, "appearance flips live");
+    assert!(matches!(
+        a.theme().variant,
+        ThemeVariant::Dark | ThemeVariant::Light
+    ));
+
+    // Esc reverts everything to the on-open snapshot.
+    press(&mut a, KeyCode::Esc);
+    assert!(!a.menu_open());
+    assert_eq!(a.theme().name, orig_name, "Esc reverts the theme");
+    assert_eq!(a.theme().variant, orig_variant, "Esc reverts appearance");
+    assert_eq!(a.preset(), Preset::Standard, "Esc reverts the preset");
 }
 
 #[test]

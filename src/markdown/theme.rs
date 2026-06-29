@@ -20,6 +20,16 @@ pub enum ThemeVariant {
     Light,
 }
 
+impl ThemeVariant {
+    /// Display name for the settings menu.
+    pub fn label(self) -> &'static str {
+        match self {
+            ThemeVariant::Dark => "Dark",
+            ThemeVariant::Light => "Light",
+        }
+    }
+}
+
 /// Built-in palette families. `Marqi` is the original hand-tuned look; the
 /// rest follow the canonical published palettes of the most popular editor
 /// and terminal themes.
@@ -34,6 +44,36 @@ pub enum ThemeName {
     Nord,
     Dracula,
     Solarized,
+}
+
+impl ThemeName {
+    /// Every built-in palette family, in settings-menu order.
+    pub const ALL: [ThemeName; 9] = [
+        ThemeName::Marqi,
+        ThemeName::OneDark,
+        ThemeName::Github,
+        ThemeName::Catppuccin,
+        ThemeName::TokyoNight,
+        ThemeName::Gruvbox,
+        ThemeName::Nord,
+        ThemeName::Dracula,
+        ThemeName::Solarized,
+    ];
+
+    /// Display name for the settings menu.
+    pub fn label(self) -> &'static str {
+        match self {
+            ThemeName::Marqi => "marqi",
+            ThemeName::OneDark => "One Dark",
+            ThemeName::Github => "GitHub",
+            ThemeName::Catppuccin => "Catppuccin",
+            ThemeName::TokyoNight => "Tokyo Night",
+            ThemeName::Gruvbox => "Gruvbox",
+            ThemeName::Nord => "Nord",
+            ThemeName::Dracula => "Dracula",
+            ThemeName::Solarized => "Solarized",
+        }
+    }
 }
 
 pub struct MarkdownTheme {

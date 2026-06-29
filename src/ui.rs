@@ -1,19 +1,23 @@
 //! Rendering for the editor: the hybrid focus-mode view (cursor block raw, rest
-//! rendered) with a hardware cursor, the scroll-only full preview, and the help
-//! overlay. The status bar shows the mode and the relevant hints.
+//! rendered) with a hardware cursor, the scroll-only full preview, and the
+//! settings popup. The status bar shows the mode and the relevant hints.
 
 use ratatui::{
     Frame,
     layout::{Constraint, Direction, Layout as RatatuiLayout, Position, Rect},
     style::{Modifier, Style},
     text::{Line, Span},
-    widgets::{Paragraph, Wrap},
+    widgets::{Block, BorderType, Borders, Clear, Paragraph, Wrap},
 };
 use unicode_segmentation::UnicodeSegmentation;
 use unicode_width::UnicodeWidthStr;
 
-use crate::app::{App, LineNumbers};
+use crate::app::{App, LineNumbers, Preset};
 use crate::color::rgb;
+
+/// True on macOS, where keybinding hints use the ⌃/⌥/⇧ modifier glyphs instead
+/// of the `Ctrl/Alt/Shift` words.
+const IS_MAC: bool = cfg!(target_os = "macos");
 
 pub fn draw(frame: &mut Frame, app: &mut App) {
     let [editor_area, status_area] =
@@ -56,31 +60,7 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
 
     let prompt = app.prompt_view();
     let height = content_area.height as usize;
-    if app.help_open {
-        let lines = help_lines(app);
-        // Clamp scrolling by *rendered* rows: on a narrow terminal a long help
-        // line wraps onto several rows, so a plain `len - height` clamp would
-        // leave the bottom lines unreachable. (This is the other half of the
-        // contract in `App::scroll_help`, which leaves the upper bound to us.)
-        let wrap_width = (content_area.width as usize).max(1);
-        let mut rows = 0usize;
-        let mut fit = 0usize;
-        for line in lines.iter().rev() {
-            rows += line_rows(line, wrap_width);
-            if rows > height.max(1) {
-                break;
-            }
-            fit += 1;
-        }
-        let max_scroll = lines.len().saturating_sub(fit.max(1));
-        app.help_scroll = app.help_scroll.min(max_scroll);
-        frame.render_widget(
-            Paragraph::new(window(&lines, app.help_scroll, height))
-                .style(Style::new().bg(app.theme().help_background))
-                .wrap(Wrap { trim: false }),
-            content_area,
-        );
-    } else if app.mode.is_read() {
+    if app.mode.is_read() {
         frame.render_widget(
             Paragraph::new(app.visible_rows().lines).style(app.theme().text),
             content_area,
@@ -105,7 +85,10 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
                 gutter_area,
             );
         }
+        // The hardware cursor is hidden while a prompt or the settings popup is
+        // taking input (the popup shows a highlighted row instead).
         if prompt.is_none()
+            && !app.menu_open()
             && let Some(pos) = cursor_position(app, content_area)
         {
             frame.set_cursor_position(pos);
@@ -130,6 +113,11 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
                 status_area,
             );
         }
+    }
+
+    // The settings popup paints last, on top of the editor and status bar.
+    if app.menu_open() {
+        draw_menu(frame, app, editor_area);
     }
 }
 
@@ -162,8 +150,8 @@ fn cursor_position(app: &App, area: Rect) -> Option<Position> {
 
 /// The status bar: a colored mode badge, the file name (with a `[+]` modified
 /// flag), and — right-aligned — the cursor position plus the three hints worth
-/// the space (`^G help · ^S save · ^Q quit`). A transient status message
-/// temporarily replaces the right side. Everything else lives in `^G` help.
+/// the space (`^G menu · ^S save · ^Q quit`). A transient status message
+/// temporarily replaces the right side. Everything else lives in the `^G` menu.
 fn build_status(app: &App, width: usize) -> Line<'static> {
     let status = app.theme().status;
     let (label, accent) = mode_badge(app);
@@ -178,13 +166,14 @@ fn build_status(app: &App, width: usize) -> Line<'static> {
     let (right, right_style) = match &app.status {
         Some(message) => (format!("{message} "), status),
         None => {
-            let hints = if app.help_open {
-                "^G/Esc close ".to_string()
+            let hints = if app.menu_open() {
+                "\u{2191}\u{2193} move · \u{2190}\u{2192} change · \u{23ce} accept · esc cancel "
+                    .to_string()
             } else if app.mode.is_read() {
-                "q/Esc back · ^G help · ^Q quit ".to_string()
+                "q/Esc back · ^G menu · ^Q quit ".to_string()
             } else {
                 let (line, col) = app.cursor_line_col();
-                format!("Ln {line}, Col {col}   ^G help · ^S save · ^Q quit ")
+                format!("Ln {line}, Col {col}   ^G menu · ^S save · ^Q quit ")
             };
             (hints, status.add_modifier(Modifier::DIM))
         }
@@ -219,8 +208,8 @@ fn build_status(app: &App, width: usize) -> Line<'static> {
 
 /// Badge label and accent color for the current mode.
 fn mode_badge(app: &App) -> (&'static str, ratatui::style::Color) {
-    if app.help_open {
-        return ("HELP", rgb(0x7d, 0xcf, 0xff));
+    if app.menu_open() {
+        return ("MENU", rgb(0x7d, 0xcf, 0xff));
     }
     if app.mode.is_read() {
         return ("READ", rgb(0x7d, 0xcf, 0xff));
@@ -240,7 +229,9 @@ fn mode_badge(app: &App) -> (&'static str, ratatui::style::Color) {
 }
 
 fn gutter_width(app: &App, editor_width: usize) -> usize {
-    if app.help_open || app.mode.is_read() || app.line_numbers() == LineNumbers::Off {
+    // The settings popup floats over the editor, so the line-number gutter
+    // stays (unlike read mode, which replaces the editor entirely).
+    if app.mode.is_read() || app.line_numbers() == LineNumbers::Off {
         return 0;
     }
     let digits = app.buffer.rope().len_lines().max(1).to_string().len();
@@ -295,173 +286,301 @@ fn clip_to_width(text: &str, width: usize) -> String {
     out
 }
 
-fn help_lines(app: &App) -> Vec<Line<'static>> {
-    let title = Style::new()
-        .fg(rgb(0x8b, 0xe9, 0xfd))
-        .add_modifier(Modifier::BOLD);
-    let heading = Style::new()
-        .fg(rgb(0xff, 0xd8, 0x66))
-        .add_modifier(Modifier::BOLD);
-    let key = Style::new()
-        .fg(rgb(0x50, 0xfa, 0x7b))
-        .add_modifier(Modifier::BOLD);
-    let dim = Style::new().fg(rgb(0x9a, 0x9a, 0xb0));
-    let text = Style::new().fg(rgb(0xe6, 0xe6, 0xf0));
-
-    let mut lines = vec![
-        Line::from(Span::styled("Marqi Help", title)),
-        Line::from(vec![
-            Span::styled("Preset: ", dim),
-            Span::styled(app.preset_label().to_string(), key),
-            Span::styled(
-                "   Live preview opens only the block under the cursor.",
-                text,
-            ),
-        ]),
-        Line::default(),
-        Line::from(Span::styled("Global", heading)),
-        help_row(
-            "^G",
-            "toggle this help (scroll with j/k, arrows, PgUp/Dn)",
-            key,
-            text,
-        ),
-        help_row("^P", "toggle full rendered preview", key, text),
-        help_row("^R", "toggle raw (highlighted source) view", key, text),
-        help_row("^L", "cycle keybinding preset", key, text),
-        help_row("^T", "toggle table row mode in pipe tables", key, text),
-        help_row("^B", "toggle block / line cursor", key, text),
-        help_row(
-            "^S / ^Q",
-            "save / quit (quit confirms when unsaved)",
-            key,
-            text,
-        ),
-        Line::default(),
-        Line::from(Span::styled("Find & Replace", heading)),
-        help_row(
-            "^F",
-            "find (also: / in Vim, ^W in Nano, M-s in Emacs)",
-            key,
-            text,
-        ),
-        help_row(
-            "Enter / \u{2193}, \u{2191}",
-            "next / previous match",
-            key,
-            text,
-        ),
-        help_row("Tab", "switch between find and replace", key, text),
-        help_row(
-            "Enter, ^A",
-            "replace current match / replace all",
-            key,
-            text,
-        ),
-        help_row("n / N", "repeat the search (Vim normal mode)", key, text),
-        Line::default(),
-        Line::from(Span::styled("Mouse", heading)),
-        help_row("click / drag", "place the cursor / select text", key, text),
-        help_row(
-            "wheel",
-            "scroll freely (any key returns to the cursor)",
-            key,
-            text,
-        ),
-        Line::default(),
-        Line::from(Span::styled("Standard", heading)),
-        help_row("^A, ^C/^X/^V", "select all, copy/cut/paste", key, text),
-        help_row("^Z, ^Y", "undo / redo", key, text),
-        help_row("Ctrl+Left/Right", "move by word", key, text),
-        help_row("Ctrl+Home/End", "document start / end", key, text),
-        help_row(
-            "Shift+movement",
-            "select when your terminal reports enhanced keys",
-            key,
-            text,
-        ),
-        Line::default(),
-        Line::from(Span::styled("Table Row Mode", heading)),
-        help_row("Tab / Shift+Tab", "next / previous table cell", key, text),
-        help_row("^N / ^D", "insert / delete data row", key, text),
-        help_row("Alt+Up / Alt+Down", "move data row", key, text),
-        Line::default(),
-        Line::from(Span::styled("Vim", heading)),
-        help_row(
-            "i a I A o O",
-            "insert, append, insert at line start/end, open lines",
-            key,
-            text,
-        ),
-        help_row(
-            "h j k l / arrows",
-            "move by grapheme and display row",
-            key,
-            text,
-        ),
-        help_row(
-            "w b 0 $ gg G",
-            "word, line, and document motions",
-            key,
-            text,
-        ),
-        help_row(
-            "v, y, d, x, dd, yy, p",
-            "visual select, yank, delete, cut, line ops, paste",
-            key,
-            text,
-        ),
-        help_row("u / ^R", "undo / redo", key, text),
-        help_row("?", "toggle this help (normal mode)", key, text),
-        Line::default(),
-        Line::from(Span::styled("Nano", heading)),
-        help_row("^K / ^U / ^O", "cut, paste, save", key, text),
-        help_row(
-            "Shift+movement",
-            "select when your terminal reports enhanced keys",
-            key,
-            text,
-        ),
-        Line::default(),
-        Line::from(Span::styled("Emacs", heading)),
-        help_row(
-            "C-a/e/f/n, arrows",
-            "move (C-b/C-p are the global toggles above)",
-            key,
-            text,
-        ),
-        help_row("M-f / M-b", "move by word", key, text),
-        help_row(
-            "C-Space, C-w, M-w, C-y",
-            "set mark, cut, copy, paste",
-            key,
-            text,
-        ),
-        help_row("C-x C-s / C-x C-c", "save / quit", key, text),
-    ];
-
-    lines.push(Line::default());
-    lines.push(Line::from(Span::styled(
-        "Config: ~/.config/marqi/config.toml",
-        dim,
-    )));
-    lines.push(Line::from(Span::styled(
-        "       (macOS: ~/Library/Application Support/marqi/config.toml)",
-        dim,
-    )));
-    lines
+/// Platform-aware Control chord: `⌃S` on macOS, `Ctrl+S` elsewhere.
+fn ck(k: &str) -> String {
+    if IS_MAC {
+        format!("\u{2303}{k}")
+    } else {
+        format!("Ctrl+{k}")
+    }
 }
 
-fn help_row(
-    keys: &'static str,
-    action: &'static str,
-    key_style: Style,
-    text_style: Style,
-) -> Line<'static> {
+/// Platform-aware Shift chord: `⇧` on macOS, `Shift+` elsewhere.
+fn sk(k: &str) -> String {
+    if IS_MAC {
+        format!("\u{21e7}{k}")
+    } else {
+        format!("Shift+{k}")
+    }
+}
+
+/// One guide row: a left-aligned key column plus its action.
+fn guide_row(keys: String, action: &str, key_style: Style, text_style: Style) -> Line<'static> {
     Line::from(vec![
-        Span::styled(format!("  {keys:<24}"), key_style),
-        Span::styled(action, text_style),
+        Span::styled(format!("  {keys:<18}"), key_style),
+        Span::styled(format!(" {action}"), text_style),
     ])
+}
+
+/// The keybinding guide, formatted for the current platform and filtered to
+/// the active preset (Vim letter-keys and Emacs `C-`/`M-` notation are mode
+/// notation, kept verbatim; the Ctrl-based chords adapt to the platform).
+fn guide_lines(app: &App) -> Vec<Line<'static>> {
+    let theme = app.theme();
+    let heading = theme.heading(2);
+    let key = theme.list_marker;
+    let text = theme.text;
+    let plat = if IS_MAC { "macOS" } else { "Linux / Windows" };
+
+    let mut out = vec![
+        Line::from(Span::styled(format!("Global \u{b7} {plat}"), heading)),
+        guide_row(
+            format!("{} / {}", ck("S"), ck("Q")),
+            "save \u{b7} quit",
+            key,
+            text,
+        ),
+        guide_row(ck("P"), "toggle preview", key, text),
+        guide_row(ck("R"), "raw source view", key, text),
+        guide_row(ck("L"), "cycle keybindings", key, text),
+        guide_row(ck("T"), "table row mode", key, text),
+        guide_row(ck("B"), "block / line cursor", key, text),
+        Line::default(),
+        Line::from(Span::styled("Find & Replace", heading)),
+        guide_row(
+            "\u{21b5} / \u{2193} \u{2191}".to_string(),
+            "next \u{b7} previous match",
+            key,
+            text,
+        ),
+        guide_row("Tab".to_string(), "switch find / replace", key, text),
+        guide_row(
+            format!("\u{21b5} \u{b7} {}", ck("A")),
+            "replace one \u{b7} replace all",
+            key,
+            text,
+        ),
+        Line::default(),
+        Line::from(Span::styled("Mouse", heading)),
+        guide_row(
+            "click / drag".to_string(),
+            "place cursor \u{b7} select",
+            key,
+            text,
+        ),
+        guide_row("wheel".to_string(), "scroll (any key returns)", key, text),
+        Line::default(),
+    ];
+
+    match app.preset() {
+        Preset::Standard => {
+            out.push(Line::from(Span::styled("Standard", heading)));
+            out.push(guide_row(
+                format!("{} {}/{}/{}", ck("A"), ck("C"), ck("X"), ck("V")),
+                "select all \u{b7} copy/cut/paste",
+                key,
+                text,
+            ));
+            out.push(guide_row(
+                format!("{} / {}", ck("Z"), ck("Y")),
+                "undo \u{b7} redo",
+                key,
+                text,
+            ));
+            out.push(guide_row(ck("F"), "find", key, text));
+            out.push(guide_row(
+                ck("\u{2190}/\u{2192}"),
+                "move by word",
+                key,
+                text,
+            ));
+            out.push(guide_row(
+                ck("Home/End"),
+                "document start \u{b7} end",
+                key,
+                text,
+            ));
+            out.push(guide_row(sk("motion"), "extend selection", key, text));
+        }
+        Preset::Vim => {
+            out.push(Line::from(Span::styled("Vim", heading)));
+            out.push(guide_row(
+                "i a I A o O".to_string(),
+                "insert \u{b7} append \u{b7} open lines",
+                key,
+                text,
+            ));
+            out.push(guide_row(
+                "h j k l".to_string(),
+                "move (also arrows)",
+                key,
+                text,
+            ));
+            out.push(guide_row(
+                "w b 0 $ gg G".to_string(),
+                "word \u{b7} line \u{b7} document motions",
+                key,
+                text,
+            ));
+            out.push(guide_row(
+                "v y d x dd yy p".to_string(),
+                "visual \u{b7} yank \u{b7} delete \u{b7} paste",
+                key,
+                text,
+            ));
+            out.push(guide_row(
+                "/ \u{b7} n / N".to_string(),
+                "find \u{b7} next / previous",
+                key,
+                text,
+            ));
+            out.push(guide_row(
+                "u \u{b7} ^R".to_string(),
+                "undo \u{b7} redo",
+                key,
+                text,
+            ));
+            out.push(guide_row(
+                "?".to_string(),
+                "this menu (normal mode)",
+                key,
+                text,
+            ));
+        }
+        Preset::Nano => {
+            out.push(Line::from(Span::styled("Nano", heading)));
+            out.push(guide_row(
+                format!("{} / {} / {}", ck("K"), ck("U"), ck("O")),
+                "cut \u{b7} paste \u{b7} save",
+                key,
+                text,
+            ));
+            out.push(guide_row(
+                format!("{} / {}", ck("F"), ck("W")),
+                "find (\"Where Is\")",
+                key,
+                text,
+            ));
+            out.push(guide_row(sk("motion"), "extend selection", key, text));
+        }
+        Preset::Emacs => {
+            out.push(Line::from(Span::styled("Emacs", heading)));
+            out.push(guide_row(
+                "C-a/e/f/n".to_string(),
+                "line start/end \u{b7} char \u{b7} line (arrows too)",
+                key,
+                text,
+            ));
+            out.push(guide_row(
+                "M-f / M-b".to_string(),
+                "move by word",
+                key,
+                text,
+            ));
+            out.push(guide_row("M-s".to_string(), "find", key, text));
+            out.push(guide_row(
+                "C-Space C-w M-w C-y".to_string(),
+                "mark \u{b7} cut \u{b7} copy \u{b7} paste",
+                key,
+                text,
+            ));
+            out.push(guide_row(
+                "C-x C-s / C-x C-c".to_string(),
+                "save \u{b7} quit",
+                key,
+                text,
+            ));
+        }
+    }
+    out
+}
+
+/// The three focusable settings rows (keybindings, theme, appearance) with the
+/// focused row's value shown between `\u{25c2} \u{25b8}` selectors.
+fn setting_rows(app: &App) -> Vec<Line<'static>> {
+    let theme = app.theme();
+    let focus = app.menu_focus();
+    let label = theme.marker;
+    let text = theme.text;
+    let accent = theme.keyword_note;
+    let arrow = theme.list_marker;
+
+    let kb = match app.preset() {
+        Preset::Standard => "Standard",
+        Preset::Vim => "Vim",
+        Preset::Nano => "Nano",
+        Preset::Emacs => "Emacs",
+    };
+    let rows: [(&str, &str); 3] = [
+        ("Keybindings", kb),
+        ("Theme", theme.name.label()),
+        ("Appearance", theme.variant.label()),
+    ];
+    rows.iter()
+        .enumerate()
+        .map(|(i, (name, val))| {
+            let focused = i == focus;
+            let (mark, lhs, rhs, vstyle) = if focused {
+                ("\u{25b8} ", "\u{25c2} ", " \u{25b8}", accent)
+            } else {
+                ("  ", "  ", "  ", text)
+            };
+            Line::from(vec![
+                Span::styled(format!("  {mark}"), arrow),
+                Span::styled(format!("{name:<12}"), label),
+                Span::styled(lhs.to_string(), arrow),
+                Span::styled(val.to_string(), vstyle),
+                Span::styled(rhs.to_string(), arrow),
+            ])
+        })
+        .collect()
+}
+
+/// Draw the centered Settings popup over `area`: rounded border, the three
+/// setting rows pinned at the top, and the scrollable keybinding guide below.
+fn draw_menu(frame: &mut Frame, app: &App, area: Rect) {
+    let theme = app.theme();
+    let settings = setting_rows(app);
+    let guide = guide_lines(app);
+
+    let max_w = area.width.saturating_sub(2).max(1);
+    let popup_w = 72u16.min(max_w);
+    let want_h = settings.len() as u16 + 1 + guide.len() as u16 + 2;
+    let max_h = area.height.saturating_sub(1).max(1);
+    let popup_h = want_h.min(max_h);
+    let px = area.x + area.width.saturating_sub(popup_w) / 2;
+    let py = area.y + area.height.saturating_sub(popup_h) / 2;
+    let popup = Rect::new(px, py, popup_w, popup_h);
+
+    frame.render_widget(Clear, popup);
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_type(BorderType::Rounded)
+        .title(Span::styled(" Settings ", theme.heading(2)))
+        .style(theme.text.bg(theme.help_background));
+    let inner = block.inner(popup);
+    frame.render_widget(block, popup);
+
+    // Settings rows pinned at the top; the guide scrolls in the space below.
+    let top_h = (settings.len() as u16 + 1).min(inner.height);
+    let [top, bottom] =
+        RatatuiLayout::vertical([Constraint::Length(top_h), Constraint::Min(0)]).areas(inner);
+
+    let mut top_lines = settings;
+    top_lines.push(Line::default());
+    frame.render_widget(Paragraph::new(top_lines).style(theme.text), top);
+
+    // Clamp the guide scroll so the last rows stay reachable (rendered-row
+    // aware, like the former help overlay).
+    let gh = bottom.height as usize;
+    let wrap_w = (bottom.width as usize).max(1);
+    let mut rows = 0usize;
+    let mut fit = 0usize;
+    for line in guide.iter().rev() {
+        rows += line_rows(line, wrap_w);
+        if rows > gh.max(1) {
+            break;
+        }
+        fit += 1;
+    }
+    let max_scroll = guide.len().saturating_sub(fit.max(1));
+    let scroll = app.menu_guide_scroll().min(max_scroll);
+    frame.render_widget(
+        Paragraph::new(window(&guide, scroll, gh))
+            .style(theme.text)
+            .wrap(Wrap { trim: false }),
+        bottom,
+    );
 }
 
 #[cfg(test)]
@@ -486,11 +605,36 @@ mod tests {
         assert!(text.starts_with(" INSERT "), "mode badge leads: {text:?}");
         assert!(text.contains("test.md"));
         assert!(text.contains("Ln 1, Col 1"));
-        assert!(text.contains("^G help"));
+        assert!(text.contains("^G menu"));
         assert!(
             !text.contains("preview") && !text.contains("cursor:block"),
             "footer stays minimal: {text:?}"
         );
+    }
+
+    #[test]
+    fn guide_is_filtered_to_the_active_preset() {
+        use super::guide_lines;
+
+        let flat = |app: &App| -> String {
+            guide_lines(app)
+                .iter()
+                .flat_map(|l| l.spans.iter())
+                .map(|s| s.content.to_string())
+                .collect()
+        };
+
+        let vim_cfg: Config = toml::from_str("[editor]\nkeybindings = \"vim\"\n").unwrap();
+        let vim = App::with_config(TextBuffer::scratch("x\n", "t.md"), &vim_cfg);
+        let text = flat(&vim);
+        assert!(text.contains("Vim"), "Vim section present: {text}");
+        assert!(!text.contains("Emacs"), "other presets hidden: {text}");
+        assert!(!text.contains("Nano"));
+
+        let std_app = App::with_config(TextBuffer::scratch("x\n", "t.md"), &Config::default());
+        let text = flat(&std_app);
+        assert!(text.contains("Standard"));
+        assert!(!text.contains("Vim"));
     }
 
     #[test]

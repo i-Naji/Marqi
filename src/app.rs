@@ -6,6 +6,7 @@
 //! quits, and `^L` cycles presets. The app owns the buffer, cursor, a cached
 //! display [`Layout`], and a viewport that scrolls to follow the cursor.
 
+use std::collections::HashMap;
 use std::time::{Duration, Instant};
 
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
@@ -17,10 +18,11 @@ use crate::cursor::Cursor;
 use crate::history::{Edit, History};
 use crate::layout::Layout;
 use crate::line_index::LineIndex;
-use crate::markdown::{CodeHighlighter, MarkdownTheme};
+use crate::markdown::{CodeHighlighter, MarkdownTheme, ThemeName, ThemeVariant};
 use crate::text::{next_grapheme, prev_grapheme};
 use crate::view::{self, HybridView, PreviewView, ViewCache};
 
+mod menu;
 mod prompt;
 mod search;
 mod smart_edit;
@@ -151,8 +153,9 @@ pub struct App {
     pub should_quit: bool,
     pub status: Option<String>,
     pub mode: Mode,
-    pub help_open: bool,
-    pub help_scroll: usize,
+    /// The interactive settings popup (theme / appearance / keybindings), when
+    /// open. Captures all input while active, like [`prompt`].
+    menu: Option<menu::Menu>,
     cursor_shape: CursorShape,
     table_mode: bool,
     /// Show every line as highlighted source (no markers stripped).
@@ -214,6 +217,12 @@ pub struct App {
     // row index.
     theme: MarkdownTheme,
     highlighter: CodeHighlighter,
+    /// Per-element colour overrides from config, re-applied on a runtime theme
+    /// switch (the settings popup) so they survive a palette change.
+    theme_overrides: HashMap<String, String>,
+    /// Explicit syntect theme from config (`theme.syntax`), or `None` to follow
+    /// each palette's default code-block pairing.
+    syntax_override: Option<String>,
     preview_view: Option<PreviewView>,
     preview_width: usize,
     preview_dirty: bool,
@@ -241,8 +250,7 @@ impl App {
             should_quit: false,
             status: None,
             mode: Mode::Insert,
-            help_open: false,
-            help_scroll: 0,
+            menu: None,
             cursor_shape: CursorShape::Block,
             table_mode: false,
             raw_view: false,
@@ -272,6 +280,8 @@ impl App {
             version: 0,
             theme: MarkdownTheme::default(),
             highlighter: CodeHighlighter::new(None),
+            theme_overrides: HashMap::new(),
+            syntax_override: None,
             preview_view: None,
             preview_width: 0,
             preview_dirty: true,
@@ -324,6 +334,10 @@ impl App {
             .trim()
             .eq_ignore_ascii_case("break");
         app.theme.apply_overrides(&config.theme.markdown);
+        // Remembered so the settings popup can re-apply them across a runtime
+        // palette switch.
+        app.theme_overrides = config.theme.markdown.clone();
+        app.syntax_override = config.theme.syntax.clone();
         let syntax = config
             .theme
             .syntax
@@ -354,6 +368,26 @@ impl App {
             Preset::Nano => "nano",
             Preset::Emacs => "emacs",
         }
+    }
+
+    /// The active keybinding preset (for the settings popup's guide filter).
+    pub fn preset(&self) -> Preset {
+        self.preset
+    }
+
+    /// Whether the settings popup is open.
+    pub fn menu_open(&self) -> bool {
+        self.menu.is_some()
+    }
+
+    /// The focused settings row (0 = keybindings, 1 = theme, 2 = appearance).
+    pub fn menu_focus(&self) -> usize {
+        self.menu.as_ref().map_or(0, |m| m.focus)
+    }
+
+    /// Scroll offset into the popup's keybinding guide.
+    pub fn menu_guide_scroll(&self) -> usize {
+        self.menu.as_ref().map_or(0, |m| m.guide_scroll)
     }
 
     pub fn line_numbers(&self) -> LineNumbers {
@@ -479,6 +513,13 @@ impl App {
             return;
         }
 
+        // The settings popup is modal: it owns all input until accepted (Enter
+        // / ^G) or cancelled (Esc), exactly like a prompt.
+        if self.menu.is_some() {
+            self.handle_menu_key(key);
+            return;
+        }
+
         let ctrl = ctrl_like(key.modifiers);
 
         // Global Ctrl shortcuts. These are used instead of function keys, which
@@ -494,15 +535,10 @@ impl App {
             return;
         }
 
-        // Vim normal mode also opens help with `?`.
+        // Vim normal mode also opens the settings popup with `?`.
         if self.preset == Preset::Vim && self.mode == Mode::Normal && key.code == KeyCode::Char('?')
         {
-            self.toggle_help();
-            return;
-        }
-
-        if self.help_open {
-            self.scroll_help(key);
+            self.open_menu();
             return;
         }
 
@@ -542,7 +578,7 @@ impl App {
         match code {
             KeyCode::Char('q') => self.request_quit(),
             KeyCode::Char('s') => self.save(),
-            KeyCode::Char('g') => self.toggle_help(),
+            KeyCode::Char('g') => self.open_menu(),
             KeyCode::Char('p') => self.toggle_preview(),
             KeyCode::Char('l') => self.cycle_preset(),
             KeyCode::Char('b') => self.toggle_cursor_shape(),
@@ -566,7 +602,7 @@ impl App {
         } else {
             Mode::Read
         };
-        self.help_open = false;
+        self.menu = None;
         self.selection_anchor = None;
         self.scroll_y = 0;
     }
@@ -581,17 +617,47 @@ impl App {
     }
 
     fn cycle_preset(&mut self) {
-        self.preset = match self.preset {
+        self.set_preset(match self.preset {
             Preset::Standard => Preset::Vim,
             Preset::Vim => Preset::Nano,
             Preset::Nano => Preset::Emacs,
             Preset::Emacs => Preset::Standard,
-        };
+        });
+    }
+
+    /// Switch to a specific keybinding preset (used by `^L` cycling and the
+    /// settings popup, which steps in both directions).
+    fn set_preset(&mut self, preset: Preset) {
+        self.preset = preset;
         self.mode = self.resting_mode();
         self.pending = None;
         self.selection_anchor = None;
         self.table_mode = false;
         self.status = Some(format!("Keybindings: {}", self.preset_label()));
+    }
+
+    /// Swap the palette at runtime. Rebuilds the theme and the code
+    /// highlighter, then resets every theme-derived cache — the render caches
+    /// deliberately assume the theme is immutable (see `view::block_cache_key`),
+    /// so a live switch must clear them. Editor-level flags (`heading_glyphs`,
+    /// `hard_breaks`) and config colour overrides are preserved across the swap.
+    fn apply_theme_runtime(&mut self, name: ThemeName, variant: ThemeVariant) {
+        let mut theme = MarkdownTheme::named(name, variant);
+        theme.heading_glyphs = self.theme.heading_glyphs;
+        theme.hard_breaks = self.theme.hard_breaks;
+        theme.apply_overrides(&self.theme_overrides);
+        self.theme = theme;
+        let syntax = self
+            .syntax_override
+            .clone()
+            .unwrap_or_else(|| self.theme.default_syntax_theme().to_string());
+        self.highlighter = CodeHighlighter::new(Some(&syntax));
+        // Rendered blocks, heights and the read-mode index all carry the old
+        // colours; drop them so the next draw rebuilds with the new palette.
+        self.view_cache = ViewCache::default();
+        self.view = None;
+        self.preview_view = None;
+        self.preview_dirty = true;
     }
 
     fn toggle_cursor_shape(&mut self) {
@@ -600,35 +666,6 @@ impl App {
             CursorShape::Line => CursorShape::Block,
         };
         self.status = Some(format!("Cursor: {}", self.cursor_shape.label()));
-    }
-
-    fn toggle_help(&mut self) {
-        self.help_open = !self.help_open;
-        self.help_scroll = 0;
-    }
-
-    /// Scroll the help overlay; Esc/Enter/q/? close it. The upper bound is
-    /// clamped by the UI layer, which knows the rendered height.
-    fn scroll_help(&mut self, key: KeyEvent) {
-        let page = self.page_rows();
-        match key.code {
-            KeyCode::Esc | KeyCode::Enter | KeyCode::Char('q') | KeyCode::Char('?') => {
-                self.help_open = false;
-            }
-            KeyCode::Up | KeyCode::Char('k') => {
-                self.help_scroll = self.help_scroll.saturating_sub(1);
-            }
-            KeyCode::Down | KeyCode::Char('j') => {
-                self.help_scroll = self.help_scroll.saturating_add(1);
-            }
-            KeyCode::PageUp => self.help_scroll = self.help_scroll.saturating_sub(page),
-            KeyCode::PageDown | KeyCode::Char(' ') => {
-                self.help_scroll = self.help_scroll.saturating_add(page);
-            }
-            KeyCode::Home | KeyCode::Char('g') => self.help_scroll = 0,
-            KeyCode::End | KeyCode::Char('G') => self.help_scroll = usize::MAX,
-            _ => {}
-        }
     }
 
     /// Toggle the raw view: every line shown as highlighted source (no markers
@@ -986,8 +1023,8 @@ impl App {
     /// Wheel scrolling moves the viewport freely; the cursor stays put and the
     /// view stops following it until the next keypress or click.
     fn scroll_wheel(&mut self, delta: isize) {
-        if self.help_open {
-            self.help_scroll = self.help_scroll.saturating_add_signed(delta);
+        if let Some(menu) = self.menu.as_mut() {
+            menu.guide_scroll = menu.guide_scroll.saturating_add_signed(delta);
             return;
         }
         let max = if self.mode.is_read() {
@@ -1044,7 +1081,7 @@ impl App {
     /// clicked column within their source line, which is close enough since
     /// the click immediately opens that line as raw.
     fn byte_at_screen(&mut self, x: u16, y: u16) -> Option<usize> {
-        if self.help_open || self.mode.is_read() || y as usize >= self.viewport_height {
+        if self.menu.is_some() || self.mode.is_read() || y as usize >= self.viewport_height {
             return None;
         }
         self.ensure_layout();

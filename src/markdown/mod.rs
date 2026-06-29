@@ -15,4 +15,4 @@ pub use preview::{
     ActiveLeaf, gfm_options, render as render_preview, render_block_node, render_block_with_hole,
     render_rows as render_preview_rows,
 };
-pub use theme::MarkdownTheme;
+pub use theme::{MarkdownTheme, ThemeName, ThemeVariant};
