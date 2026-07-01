@@ -470,6 +470,45 @@ fn menu_switches_theme_appearance_and_preset_live_with_esc_revert() {
 }
 
 #[test]
+fn menu_edits_line_numbers_live_with_esc_revert() {
+    let mut a = app_with("# Title\n\nbody\n");
+    assert_eq!(a.line_numbers(), LineNumbers::Off);
+
+    press_mod(&mut a, KeyCode::Char('g'), KeyModifiers::CONTROL);
+    // Down past Keybindings/Theme/Appearance to the Line numbers row.
+    for _ in 0..3 {
+        press(&mut a, KeyCode::Down);
+    }
+    press(&mut a, KeyCode::Right); // off -> absolute
+    assert_eq!(a.line_numbers(), LineNumbers::Absolute, "applies live");
+    press(&mut a, KeyCode::Right); // absolute -> relative
+    assert_eq!(a.line_numbers(), LineNumbers::Relative);
+    press(&mut a, KeyCode::Right); // relative -> off (wraps)
+    assert_eq!(a.line_numbers(), LineNumbers::Off);
+    press(&mut a, KeyCode::Left); // off -> relative (wraps back)
+    assert_eq!(a.line_numbers(), LineNumbers::Relative);
+
+    // Esc reverts to the on-open value.
+    press(&mut a, KeyCode::Esc);
+    assert!(!a.menu_open());
+    assert_eq!(
+        a.line_numbers(),
+        LineNumbers::Off,
+        "Esc reverts line numbers"
+    );
+
+    // Enter keeps the change.
+    press_mod(&mut a, KeyCode::Char('g'), KeyModifiers::CONTROL);
+    for _ in 0..3 {
+        press(&mut a, KeyCode::Down);
+    }
+    press(&mut a, KeyCode::Right); // off -> absolute
+    press(&mut a, KeyCode::Enter);
+    assert!(!a.menu_open());
+    assert_eq!(a.line_numbers(), LineNumbers::Absolute, "Enter keeps it");
+}
+
+#[test]
 fn read_mode_q_returns_to_focus() {
     let mut a = vim_app();
     press_mod(&mut a, KeyCode::Char('p'), KeyModifiers::CONTROL);

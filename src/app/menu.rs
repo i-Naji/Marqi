@@ -9,19 +9,27 @@
 
 use crossterm::event::{KeyCode, KeyEvent};
 
-use super::{App, Preset, ctrl_like};
+use super::{App, LineNumbers, Preset, ctrl_like};
 use crate::markdown::{ThemeName, ThemeVariant};
 
 const ROW_KEYBINDINGS: usize = 0;
 const ROW_THEME: usize = 1;
 const ROW_APPEARANCE: usize = 2;
-const LAST_ROW: usize = ROW_APPEARANCE;
+const ROW_LINE_NUMBERS: usize = 3;
+const LAST_ROW: usize = ROW_LINE_NUMBERS;
 
 /// Preset cycle order for the keybindings row.
 const PRESETS: [Preset; 4] = [Preset::Standard, Preset::Vim, Preset::Nano, Preset::Emacs];
+/// Line-number cycle order.
+const LINE_NUMBERS: [LineNumbers; 3] = [
+    LineNumbers::Off,
+    LineNumbers::Absolute,
+    LineNumbers::Relative,
+];
 
 pub struct Menu {
-    /// Focused setting row (0 = keybindings, 1 = theme, 2 = appearance).
+    /// Focused setting row (0 = keybindings, 1 = theme, 2 = appearance,
+    /// 3 = line numbers).
     pub focus: usize,
     /// Scroll offset into the keybinding guide below the settings rows.
     pub guide_scroll: usize,
@@ -29,6 +37,7 @@ pub struct Menu {
     orig_preset: Preset,
     orig_theme: ThemeName,
     orig_variant: ThemeVariant,
+    orig_line_numbers: LineNumbers,
 }
 
 impl App {
@@ -41,6 +50,7 @@ impl App {
             orig_preset: self.preset,
             orig_theme: self.theme.name,
             orig_variant: self.theme.variant,
+            orig_line_numbers: self.line_numbers,
         });
     }
 
@@ -60,12 +70,18 @@ impl App {
 
         match key.code {
             KeyCode::Esc => {
-                let (preset, theme, variant) = {
+                let (preset, theme, variant, line_numbers) = {
                     let m = self.menu.as_ref().unwrap();
-                    (m.orig_preset, m.orig_theme, m.orig_variant)
+                    (
+                        m.orig_preset,
+                        m.orig_theme,
+                        m.orig_variant,
+                        m.orig_line_numbers,
+                    )
                 };
                 self.apply_theme_runtime(theme, variant);
                 self.set_preset(preset);
+                self.line_numbers = line_numbers;
                 self.status = None;
                 self.menu = None;
             }
@@ -108,6 +124,15 @@ impl App {
                     ThemeVariant::Light => ThemeVariant::Dark,
                 };
                 self.apply_theme_runtime(self.theme.name, variant);
+            }
+            ROW_LINE_NUMBERS => {
+                let i = LINE_NUMBERS
+                    .iter()
+                    .position(|n| *n == self.line_numbers)
+                    .unwrap_or(0);
+                // Pure rendering state — the gutter re-reads it next draw, no
+                // cache reset needed.
+                self.line_numbers = LINE_NUMBERS[step(i, LINE_NUMBERS.len(), forward)];
             }
             _ => {}
         }

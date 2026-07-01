@@ -501,10 +501,16 @@ fn setting_rows(app: &App) -> Vec<Line<'static>> {
         Preset::Nano => "Nano",
         Preset::Emacs => "Emacs",
     };
-    let rows: [(&str, &str); 3] = [
+    let ln = match app.line_numbers() {
+        LineNumbers::Off => "off",
+        LineNumbers::Absolute => "absolute",
+        LineNumbers::Relative => "relative",
+    };
+    let rows: [(&str, &str); 4] = [
         ("Keybindings", kb),
         ("Theme", theme.name.label()),
         ("Appearance", theme.variant.label()),
+        ("Line numbers", ln),
     ];
     rows.iter()
         .enumerate()
@@ -517,7 +523,7 @@ fn setting_rows(app: &App) -> Vec<Line<'static>> {
             };
             Line::from(vec![
                 Span::styled(format!("  {mark}"), arrow),
-                Span::styled(format!("{name:<12}"), label),
+                Span::styled(format!("{name:<13}"), label),
                 Span::styled(lhs.to_string(), arrow),
                 Span::styled(val.to_string(), vstyle),
                 Span::styled(rhs.to_string(), arrow),
