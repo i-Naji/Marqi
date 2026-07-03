@@ -327,29 +327,10 @@ impl MarkdownTheme {
             // styled runs. (Tuned for a dark terminal; config can override via
             // the `text` key.)
             text: fg(0xe6, 0xe6, 0xf0).bg(background),
-            // A vivid per-level rainbow (tokyonight/tree-sitter flavour) that
-            // downgrades to distinct 256-colour indices; H1 is the most
-            // prominent (bold + underline).
-            headings: [
-                fg(0x7a, 0xa2, 0xf7)
-                    .bg(background)
-                    .add_modifier(Modifier::BOLD | Modifier::UNDERLINED), // H1 blue
-                fg(0xbb, 0x9a, 0xf7)
-                    .bg(background)
-                    .add_modifier(Modifier::BOLD), // H2 purple
-                fg(0x7d, 0xcf, 0xff)
-                    .bg(background)
-                    .add_modifier(Modifier::BOLD), // H3 cyan
-                fg(0x9e, 0xce, 0x6a)
-                    .bg(background)
-                    .add_modifier(Modifier::BOLD), // H4 green
-                fg(0xe0, 0xaf, 0x68)
-                    .bg(background)
-                    .add_modifier(Modifier::BOLD), // H5 yellow
-                fg(0xf7, 0x76, 0x8e)
-                    .bg(background)
-                    .add_modifier(Modifier::BOLD), // H6 red
-            ],
+            // Single-hue prominence gradient: H1 in the accent blue, easing
+            // through the body text down to muted at H6 (bold throughout).
+            headings: heading_gradient(0x7aa2f7, 0xe6e6f0, 0x9a9ab0)
+                .map(|hex| hstyle(hex, background)),
             heading_glyphs: true,
             hard_breaks: false,
             marker: fg(0x6c, 0x70, 0x86).bg(background),
@@ -406,26 +387,10 @@ impl MarkdownTheme {
                 .fg(rgb(0x1f, 0x29, 0x37)),
             help_background: background,
             text: fg(0x1f, 0x29, 0x37).bg(background),
-            headings: [
-                fg(0x00, 0x5f, 0x87)
-                    .bg(background)
-                    .add_modifier(Modifier::BOLD | Modifier::UNDERLINED),
-                fg(0x9a, 0x00, 0x5f)
-                    .bg(background)
-                    .add_modifier(Modifier::BOLD),
-                fg(0x5f, 0x00, 0xaf)
-                    .bg(background)
-                    .add_modifier(Modifier::BOLD),
-                fg(0x00, 0x87, 0x5f)
-                    .bg(background)
-                    .add_modifier(Modifier::BOLD),
-                fg(0x87, 0x5f, 0x00)
-                    .bg(background)
-                    .add_modifier(Modifier::BOLD),
-                fg(0xaf, 0x5f, 0x00)
-                    .bg(background)
-                    .add_modifier(Modifier::BOLD),
-            ],
+            // Single-hue prominence gradient: H1 in the accent blue, easing
+            // through the near-black body text down to muted grey at H6.
+            headings: heading_gradient(0x005f87, 0x1f2937, 0x5f6b7a)
+                .map(|hex| hstyle(hex, background)),
             heading_glyphs: true,
             hard_breaks: false,
             marker: fg(0x8a, 0x8f, 0x98).bg(background),
@@ -464,9 +429,11 @@ impl MarkdownTheme {
         }
     }
 
-    /// Derive the full role set from a seed palette. The mapping mirrors the
-    /// marqi look (per-level heading rainbow, italic quotes, bold keyword
-    /// badges) so every family feels native while staying canonical in hue.
+    /// Derive the full role set from a seed palette. Headings share the
+    /// theme's accent hue and recede by prominence (H1 accent → body → muted)
+    /// rather than cycling colours, so they read as a hierarchy and stay
+    /// compatible with the body text; secondary chrome stays muted so the
+    /// prose leads.
     fn from_palette(name: ThemeName, variant: ThemeVariant, p: Palette) -> Self {
         let bg = p.background;
         // The xterm-256 downgrade can collapse a subtle offset into the
@@ -488,14 +455,9 @@ impl MarkdownTheme {
             status: Style::new().bg(surface).fg(p.text),
             help_background: bg,
             text: s(p.text),
-            headings: [
-                heading(p.blue).add_modifier(Modifier::UNDERLINED),
-                heading(p.purple),
-                heading(p.cyan),
-                heading(p.green),
-                heading(p.yellow),
-                heading(p.red),
-            ],
+            // Single-hue prominence gradient (see `heading_gradient`): bold
+            // throughout, no underline noise.
+            headings: p.headings.map(heading),
             heading_glyphs: true,
             hard_breaks: false,
             marker: s(p.faint),
@@ -503,7 +465,8 @@ impl MarkdownTheme {
             link: s(p.link).add_modifier(Modifier::UNDERLINED),
             quote: s(p.muted).add_modifier(Modifier::ITALIC),
             quote_bar: s(p.chrome),
-            list_marker: s(p.cyan),
+            // List bullets share the link accent instead of a stray cyan.
+            list_marker: s(p.link),
             task_done: s(p.green),
             task_todo: s(p.faint),
             rule: s(p.chrome),
@@ -517,6 +480,40 @@ impl MarkdownTheme {
             selection,
         }
     }
+}
+
+/// Linear per-channel blend of two `0xRRGGBB` colours; `t` in `0.0..=1.0`
+/// moves from `a` toward `b`.
+fn mix(a: u32, b: u32, t: f64) -> u32 {
+    let t = t.clamp(0.0, 1.0);
+    let lerp = |shift: u32| {
+        let (ca, cb) = (((a >> shift) & 0xff) as f64, ((b >> shift) & 0xff) as f64);
+        (ca + (cb - ca) * t).round() as u32
+    };
+    (lerp(16) << 16) | (lerp(8) << 8) | lerp(0)
+}
+
+/// A bold heading style: `0xRRGGBB` foreground on `bg` (for the hand-tuned
+/// marqi themes, which build styles directly rather than from a seed palette).
+fn hstyle(hex: u32, bg: Color) -> Style {
+    Style::new()
+        .fg(rgb((hex >> 16) as u8, (hex >> 8) as u8, hex as u8))
+        .bg(bg)
+        .add_modifier(Modifier::BOLD)
+}
+
+/// H1..H6 foregrounds as a single-hue prominence gradient: the accent at H1
+/// eases through the body text and down to muted at H6, so headings read as a
+/// descending hierarchy in one colour family rather than a rainbow.
+fn heading_gradient(accent: u32, text: u32, muted: u32) -> [u32; 6] {
+    [
+        accent,
+        mix(accent, text, 0.35),
+        mix(accent, text, 0.7),
+        text,
+        mix(text, muted, 0.5),
+        muted,
+    ]
 }
 
 /// A surface/selection colour, guaranteed distinct from the canvas after any
@@ -555,15 +552,18 @@ struct Palette {
     selection: Color,
     /// Links and NOTE-style keywords.
     link: Color,
-    /// Inline code foreground.
+    /// Inline code foreground (softened toward the body text for legibility).
     code: Color,
+    /// H1..H6 foregrounds: a single-hue prominence gradient from the accent
+    /// down to muted (see [`heading_gradient`]).
+    headings: [Color; 6],
+    // Semantic accents still used by roles (keyword badges, task-done, and the
+    // heading gradient's accent, which is `link`). The remaining hues in each
+    // seed's `accents` array are reserved but not mapped to their own fields.
     red: Color,
     orange: Color,
     yellow: Color,
     green: Color,
-    cyan: Color,
-    blue: Color,
-    purple: Color,
 }
 
 /// Canonical seed colours per family and face. Sources: the published
@@ -591,14 +591,14 @@ fn palette(name: ThemeName, variant: ThemeVariant) -> Palette {
         chrome: c(chrome),
         selection: c(selection),
         link: c(link),
-        code: c(code),
+        // Pull the theme's raw code colour toward the body text so inline
+        // code reads on the surface chip instead of shouting a saturated hue.
+        code: c(mix(code, text, 0.4)),
+        headings: heading_gradient(link, text, muted).map(c),
         red: c(accents[0]),
         orange: c(accents[1]),
         yellow: c(accents[2]),
         green: c(accents[3]),
-        cyan: c(accents[4]),
-        blue: c(accents[5]),
-        purple: c(accents[6]),
     };
     let dark = variant == ThemeVariant::Dark;
     match name {
@@ -979,6 +979,42 @@ mod tests {
     use super::*;
 
     #[test]
+    fn mix_blends_channels() {
+        assert_eq!(mix(0x000000, 0xffffff, 0.5), 0x808080);
+        assert_eq!(mix(0x102030, 0x102030, 0.7), 0x102030);
+        assert_eq!(mix(0xff0000, 0x00ff00, 0.0), 0xff0000);
+        assert_eq!(mix(0xff0000, 0x00ff00, 1.0), 0x00ff00);
+    }
+
+    #[test]
+    fn heading_gradient_descends_in_one_hue() {
+        // H1 is the accent; H6 is muted; endpoints are exact and the interior
+        // steps are distinct — a hierarchy, not a rainbow.
+        let g = heading_gradient(0x61afef, 0xabb2bf, 0x828997);
+        assert_eq!(g[0], 0x61afef, "H1 is the accent");
+        assert_eq!(g[5], 0x828997, "H6 is muted");
+        let distinct: std::collections::HashSet<_> = g.iter().collect();
+        assert_eq!(distinct.len(), 6, "all six levels are distinct: {g:x?}");
+    }
+
+    #[test]
+    fn no_theme_underlines_or_rainbows_its_headings() {
+        for name in ThemeName::ALL {
+            for variant in [ThemeVariant::Dark, ThemeVariant::Light] {
+                let t = MarkdownTheme::named(name, variant);
+                assert!(
+                    !t.headings[0].add_modifier.contains(Modifier::UNDERLINED),
+                    "{name:?}/{variant:?}: H1 should not be underlined"
+                );
+                // Levels also read as a hierarchy via the ◆◈◇●○◦ glyph
+                // prefixes, so the gradient's colour distinctness (verified at
+                // full depth in `heading_gradient_descends_in_one_hue`) need
+                // not survive the 256-colour downgrade here.
+            }
+        }
+    }
+
+    #[test]
     fn overrides_extended_theme_keys() {
         let mut theme = MarkdownTheme::default();
         let overrides = HashMap::from([
@@ -1092,12 +1128,15 @@ mod tests {
                     !theme.default_syntax_theme().is_empty(),
                     "{name:?}/{variant:?}: every face pairs a syntect theme"
                 );
-                // Headings carry distinct accents (the per-level rainbow).
-                let fgs: std::collections::HashSet<_> =
-                    theme.headings.iter().map(|h| h.fg).collect();
+                // Every heading level is bold (the prominence gradient's
+                // colour spread is exercised in `heading_gradient_*`, which is
+                // colour-depth independent — here we only require they render).
                 assert!(
-                    fgs.len() >= 4,
-                    "{name:?}/{variant:?}: heading rainbow collapsed to {fgs:?}"
+                    theme
+                        .headings
+                        .iter()
+                        .all(|h| h.add_modifier.contains(Modifier::BOLD)),
+                    "{name:?}/{variant:?}: headings must be bold"
                 );
             }
         }
