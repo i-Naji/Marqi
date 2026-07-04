@@ -697,7 +697,8 @@ mod tests {
     fn menu_repaints_trailing_cells_of_wide_chars() {
         use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
-        let doc = "# Title\n\nEmphasis around CJK text: **中文加粗** and *日本語斜体*.\n\n- list item\n";
+        let doc =
+            "# Title\n\nEmphasis around CJK text: **中文加粗** and *日本語斜体*.\n\n- list item\n";
         let mut app = App::with_config(TextBuffer::scratch(doc, "test.md"), &Config::default());
         let backend = ratatui::backend::TestBackend::new(80, 24);
         let mut terminal = ratatui::Terminal::new(backend).unwrap();
