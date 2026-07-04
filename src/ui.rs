@@ -686,6 +686,55 @@ mod tests {
             .collect()
     }
 
+    /// Opening the settings popup over double-width text (CJK, emoji) must
+    /// repaint the wide glyphs' trailing cells. ratatui-core 0.1.1's buffer
+    /// diff skipped them when the popup's blank cells carried the same style
+    /// as the covered text, leaving half-glyph debris inside the popup on real
+    /// terminals (menu "offset" over CJK/emoji lines). Fixed by ratatui-core
+    /// 0.1.2; this pins the behaviour by checking the backend grid — the
+    /// diff-applied view a terminal would show — against the composed frame.
+    #[test]
+    fn menu_repaints_trailing_cells_of_wide_chars() {
+        use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+
+        let doc = "# Title\n\nEmphasis around CJK text: **中文加粗** and *日本語斜体*.\n\n- list item\n";
+        let mut app = App::with_config(TextBuffer::scratch(doc, "test.md"), &Config::default());
+        let backend = ratatui::backend::TestBackend::new(80, 24);
+        let mut terminal = ratatui::Terminal::new(backend).unwrap();
+        terminal.draw(|frame| super::draw(frame, &mut app)).unwrap();
+
+        app.handle_key(KeyEvent::new(KeyCode::Char('g'), KeyModifiers::CONTROL));
+        assert!(app.menu_open());
+        let mut composed: Option<ratatui::buffer::Buffer> = None;
+        terminal
+            .draw(|frame| {
+                super::draw(frame, &mut app);
+                composed = Some(frame.buffer_mut().clone());
+            })
+            .unwrap();
+        let composed = composed.unwrap();
+
+        // Every cell the frame composed must reach the terminal, except cells
+        // hidden under a wide glyph (their content is invisible by contract).
+        let shown = terminal.backend().buffer();
+        for y in 0..24u16 {
+            let mut hidden = 0usize;
+            for x in 0..80u16 {
+                let want = composed.cell((x, y)).unwrap();
+                if hidden > 0 {
+                    hidden -= 1;
+                    continue;
+                }
+                hidden = display_width(want.symbol()).saturating_sub(1);
+                let got = shown.cell((x, y)).unwrap();
+                assert_eq!(
+                    got, want,
+                    "cell ({x},{y}) on the terminal differs from the composed frame"
+                );
+            }
+        }
+    }
+
     #[test]
     fn default_left_margin_pads_one_column() {
         let mut app = App::with_config(TextBuffer::scratch("hi\n", "test.md"), &Config::default());
