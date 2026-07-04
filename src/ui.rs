@@ -318,7 +318,7 @@ fn guide_row(keys: String, action: &str, key_style: Style, text_style: Style) ->
 fn guide_lines(app: &App) -> Vec<Line<'static>> {
     let theme = app.theme();
     let heading = theme.heading(2);
-    let key = theme.list_marker;
+    let key = theme.keyword_note;
     let text = theme.text;
     let plat = if IS_MAC { "macOS" } else { "Linux / Windows" };
 
@@ -493,7 +493,7 @@ fn setting_rows(app: &App) -> Vec<Line<'static>> {
     let label = theme.marker;
     let text = theme.text;
     let accent = theme.keyword_note;
-    let arrow = theme.list_marker;
+    let arrow = theme.quote_bar;
 
     let kb = match app.preset() {
         Preset::Standard => "Standard",
