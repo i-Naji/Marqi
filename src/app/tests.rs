@@ -729,6 +729,26 @@ fn save_as_can_be_cancelled() {
 }
 
 #[test]
+fn save_as_keeps_write_errors_visible() {
+    let mut a = app();
+    type_str(&mut a, "draft");
+    press_mod(&mut a, KeyCode::Char('s'), KeyModifiers::CONTROL);
+    for _ in 0..3 {
+        press(&mut a, KeyCode::Delete);
+    }
+
+    let path = std::env::temp_dir()
+        .join(format!("marqi_missing_{}", std::process::id()))
+        .join("note.md");
+    type_str(&mut a, path.to_str().unwrap());
+    press(&mut a, KeyCode::Enter);
+
+    let prompt = a.prompt_view().expect("failed save keeps the prompt open");
+    assert!(prompt.text.contains("Error:"), "prompt: {:?}", prompt.text);
+    assert!(prompt.text.ends_with(path.to_str().unwrap()));
+}
+
+#[test]
 fn raw_view_shows_source_with_markers() {
     let mut a = app_with("# Title\n\nA **bold** word.\n");
     press_mod(&mut a, KeyCode::Char('r'), KeyModifiers::CONTROL);

@@ -22,7 +22,11 @@ const REPLACE_LABEL: &str = "Replace with: ";
 pub(super) enum Prompt {
     /// Editing a filename for an unnamed buffer. `cursor` is a byte offset into
     /// `input` (always on a grapheme boundary).
-    SaveAs { input: String, cursor: usize },
+    SaveAs {
+        input: String,
+        cursor: usize,
+        error: Option<String>,
+    },
     /// Confirming an overwrite of an existing path; `input` is kept so `n` can
     /// return to editing the name.
     Overwrite { path: PathBuf, input: String },
@@ -51,6 +55,7 @@ impl App {
         self.prompt = Some(Prompt::SaveAs {
             input: ".md".to_string(),
             cursor: 0,
+            error: None,
         });
     }
 
@@ -62,11 +67,19 @@ impl App {
     /// The active prompt rendered for the status line, if any.
     pub fn prompt_view(&self) -> Option<PromptView> {
         match self.prompt.as_ref()? {
-            Prompt::SaveAs { input, cursor } => {
-                let col =
-                    UnicodeWidthStr::width(SAVE_LABEL) + UnicodeWidthStr::width(&input[..*cursor]);
+            Prompt::SaveAs {
+                input,
+                cursor,
+                error,
+            } => {
+                let label = error.as_ref().map_or_else(
+                    || SAVE_LABEL.to_string(),
+                    |error| format!("{error} · {SAVE_LABEL}"),
+                );
+                let col = UnicodeWidthStr::width(label.as_str())
+                    + UnicodeWidthStr::width(&input[..*cursor]);
                 Some(PromptView {
-                    text: format!("{SAVE_LABEL}{input}"),
+                    text: format!("{label}{input}"),
                     cursor_col: Some(col as u16),
                 })
             }
@@ -119,7 +132,11 @@ impl App {
 
     pub(super) fn handle_prompt_key(&mut self, key: KeyEvent) {
         match self.prompt.take() {
-            Some(Prompt::SaveAs { input, cursor }) => self.save_as_key(key, input, cursor),
+            Some(Prompt::SaveAs {
+                input,
+                cursor,
+                error: _,
+            }) => self.save_as_key(key, input, cursor),
             Some(Prompt::Overwrite { path, input }) => self.overwrite_key(key, path, input),
             Some(Prompt::ConfirmQuit) => self.confirm_quit_key(key),
             Some(Prompt::Find { input, cursor }) => self.find_key(key, input, cursor),
@@ -165,7 +182,11 @@ impl App {
                 edit_line(key, &mut input, &mut cursor);
             }
         }
-        self.prompt = Some(Prompt::SaveAs { input, cursor });
+        self.prompt = Some(Prompt::SaveAs {
+            input,
+            cursor,
+            error: None,
+        });
     }
 
     fn confirm_save_as(&mut self, input: &str) {
@@ -190,7 +211,11 @@ impl App {
             KeyCode::Char('n') | KeyCode::Char('N') | KeyCode::Esc => {
                 let cursor = input.len();
                 self.status = Some("Save cancelled".to_string());
-                self.prompt = Some(Prompt::SaveAs { input, cursor });
+                self.prompt = Some(Prompt::SaveAs {
+                    input,
+                    cursor,
+                    error: None,
+                });
             }
             _ => self.prompt = Some(Prompt::Overwrite { path, input }),
         }
@@ -211,10 +236,10 @@ impl App {
     }
 
     fn reopen_save_as(&mut self, input: &str, message: String) {
-        self.status = Some(message);
         self.prompt = Some(Prompt::SaveAs {
             input: input.to_string(),
             cursor: input.len(),
+            error: Some(message),
         });
     }
 }
