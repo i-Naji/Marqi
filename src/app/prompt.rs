@@ -229,6 +229,7 @@ impl App {
             Ok(()) => {
                 self.prompt = None;
                 self.history.mark_saved();
+                self.auto_save_retry_at = None;
                 self.status = Some("Saved".to_string());
             }
             Err(e) => self.reopen_save_as(input, format!("Error: {e}")),

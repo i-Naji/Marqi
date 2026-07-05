@@ -35,6 +35,7 @@ const DEFAULT_TAB_WIDTH: usize = 4;
 const DEFAULT_SCROLLOFF: usize = 3;
 /// Idle time after the last edit before an enabled auto-save fires.
 const AUTO_SAVE_DELAY: Duration = Duration::from_secs(2);
+const AUTO_SAVE_RETRY_DELAY: Duration = Duration::from_secs(10);
 
 /// Whether the event's modifiers count as "Ctrl" for shortcuts. SUPER (Cmd on
 /// macOS, reported by kitty-protocol terminals) is accepted as an alias so
@@ -182,6 +183,7 @@ pub struct App {
     auto_save: bool,
     /// When the buffer was last edited, for the auto-save idle check.
     last_edit: Option<Instant>,
+    auto_save_retry_at: Option<Instant>,
 
     /// Whether drawing should keep the cursor in view. Cleared by wheel
     /// scrolling so the user can read elsewhere; any keypress restores it.
@@ -265,6 +267,7 @@ impl App {
             find_origin: 0,
             auto_save: false,
             last_edit: None,
+            auto_save_retry_at: None,
             follow_cursor: true,
             mouse_press_byte: None,
             tab_width: DEFAULT_TAB_WIDTH,
@@ -1140,12 +1143,26 @@ impl App {
         if !self.wants_tick() {
             return;
         }
+        let now = Instant::now();
+        if self.auto_save_retry_at.is_some_and(|retry| retry > now) {
+            return;
+        }
         let idle = self
             .last_edit
             .is_none_or(|at| at.elapsed() >= AUTO_SAVE_DELAY);
-        if idle && self.buffer.save().is_ok() {
-            self.history.mark_saved();
-            self.status = Some("Auto-saved".to_string());
+        if !idle {
+            return;
+        }
+        match self.buffer.save() {
+            Ok(()) => {
+                self.history.mark_saved();
+                self.auto_save_retry_at = None;
+                self.status = Some("Auto-saved".to_string());
+            }
+            Err(error) => {
+                self.auto_save_retry_at = Some(now + AUTO_SAVE_RETRY_DELAY);
+                self.status = Some(format!("Auto-save failed: {error}"));
+            }
         }
     }
 
@@ -1414,6 +1431,7 @@ impl App {
     fn mark_edited(&mut self, impact: EditImpact) {
         self.version += 1;
         self.last_edit = Some(Instant::now());
+        self.auto_save_retry_at = None;
         // The replaced span's new line count, from the post-mutation rope so
         // every line-break form ropey recognizes is counted.
         let rope = self.buffer.rope();
@@ -1470,6 +1488,7 @@ impl App {
         self.status = Some(match self.buffer.save() {
             Ok(()) => {
                 self.history.mark_saved();
+                self.auto_save_retry_at = None;
                 "Saved".to_string()
             }
             Err(e) => format!("Error: {e}"),

@@ -1187,6 +1187,32 @@ fn auto_save_fires_after_the_idle_delay() {
 }
 
 #[test]
+fn auto_save_reports_failures_and_backs_off() {
+    let path = std::env::temp_dir()
+        .join(format!("marqi_autosave_missing_{}", std::process::id()))
+        .join("note.md");
+    std::fs::remove_dir_all(path.parent().unwrap()).ok();
+    let cfg: Config = toml::from_str("[editor]\nauto_save = true\n").unwrap();
+    let mut a = App::with_config(TextBuffer::from_path(&path).unwrap(), &cfg);
+    a.clipboard = Clipboard::internal_only();
+
+    type_str(&mut a, "draft");
+    a.last_edit = Some(Instant::now() - Duration::from_secs(3));
+    a.tick();
+
+    assert!(a.buffer.modified());
+    assert!(
+        a.status
+            .as_deref()
+            .is_some_and(|status| status.starts_with("Auto-save failed:"))
+    );
+    assert!(
+        a.auto_save_retry_at
+            .is_some_and(|retry| retry > Instant::now())
+    );
+}
+
+#[test]
 fn cmd_super_modifier_acts_as_ctrl() {
     let mut a = app_with("hello");
     type_str(&mut a, "x");
