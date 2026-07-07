@@ -59,20 +59,61 @@ fn init_after_raw_mode() -> Result<Tui> {
 
 /// Leave the alternate screen and disable raw mode. Safe to call more than once.
 pub fn restore() -> Result<()> {
-    let mut stdout = io::stdout();
-    // Pop the enhancement flags if we pushed them (ignored when unsupported).
-    // This must happen *before* LeaveAlternateScreen: kitty keeps a separate
-    // keyboard-flag stack per screen buffer, and the push happened on the
-    // alternate screen.
-    let _ = execute!(stdout, PopKeyboardEnhancementFlags);
-    execute!(
-        stdout,
-        DisableMouseCapture,
-        SetCursorStyle::DefaultUserShape,
-        LeaveAlternateScreen
-    )?;
-    disable_raw_mode()?;
-    Ok(())
+    restore_with(&mut TerminalRestore {
+        stdout: io::stdout(),
+    })
+}
+
+trait RestoreOps {
+    fn pop_keyboard_flags(&mut self);
+    fn disable_mouse(&mut self) -> io::Result<()>;
+    fn reset_cursor(&mut self) -> io::Result<()>;
+    fn leave_screen(&mut self) -> io::Result<()>;
+    fn disable_raw(&mut self) -> io::Result<()>;
+}
+
+struct TerminalRestore {
+    stdout: Stdout,
+}
+
+impl RestoreOps for TerminalRestore {
+    fn pop_keyboard_flags(&mut self) {
+        let _ = execute!(self.stdout, PopKeyboardEnhancementFlags);
+    }
+
+    fn disable_mouse(&mut self) -> io::Result<()> {
+        execute!(self.stdout, DisableMouseCapture)
+    }
+
+    fn reset_cursor(&mut self) -> io::Result<()> {
+        execute!(self.stdout, SetCursorStyle::DefaultUserShape)
+    }
+
+    fn leave_screen(&mut self) -> io::Result<()> {
+        execute!(self.stdout, LeaveAlternateScreen)
+    }
+
+    fn disable_raw(&mut self) -> io::Result<()> {
+        disable_raw_mode()
+    }
+}
+
+fn restore_with(ops: &mut impl RestoreOps) -> Result<()> {
+    let mut first_error = None;
+    ops.pop_keyboard_flags();
+    remember_error(&mut first_error, ops.disable_mouse());
+    remember_error(&mut first_error, ops.reset_cursor());
+    remember_error(&mut first_error, ops.leave_screen());
+    remember_error(&mut first_error, ops.disable_raw());
+    first_error.map_or(Ok(()), Err)
+}
+
+fn remember_error(first: &mut Option<anyhow::Error>, result: io::Result<()>) {
+    if let Err(error) = result
+        && first.is_none()
+    {
+        *first = Some(error.into());
+    }
 }
 
 /// Chain a terminal-restoring step in front of the existing panic hook so the
@@ -83,4 +124,50 @@ fn set_panic_hook() {
         let _ = restore();
         hook(info);
     }));
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{RestoreOps, restore_with};
+    use std::io;
+
+    #[derive(Default)]
+    struct FailingRestore {
+        steps: Vec<&'static str>,
+    }
+
+    impl RestoreOps for FailingRestore {
+        fn pop_keyboard_flags(&mut self) {
+            self.steps.push("keyboard");
+        }
+
+        fn disable_mouse(&mut self) -> io::Result<()> {
+            self.steps.push("mouse");
+            Err(io::Error::other("mouse failed"))
+        }
+
+        fn reset_cursor(&mut self) -> io::Result<()> {
+            self.steps.push("cursor");
+            Ok(())
+        }
+
+        fn leave_screen(&mut self) -> io::Result<()> {
+            self.steps.push("screen");
+            Err(io::Error::other("screen failed"))
+        }
+
+        fn disable_raw(&mut self) -> io::Result<()> {
+            self.steps.push("raw");
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn restoration_continues_after_an_error() {
+        let mut ops = FailingRestore::default();
+        let error = restore_with(&mut ops).unwrap_err();
+
+        assert_eq!(ops.steps, ["keyboard", "mouse", "cursor", "screen", "raw"]);
+        assert!(error.to_string().contains("mouse failed"));
+    }
 }
