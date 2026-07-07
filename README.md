@@ -42,6 +42,9 @@ curl -fsSL https://raw.githubusercontent.com/i-Naji/Marqi/main/install.sh | sh
 irm https://raw.githubusercontent.com/i-Naji/Marqi/main/install.ps1 | iex
 ```
 
+The installers require the release checksum. Set `MARQI_ALLOW_UNVERIFIED=1`
+only when you intentionally need to install without verification.
+
 ### From source
 
 ```sh

@@ -10,6 +10,7 @@
 #   MARQI_VERSION       install a specific tag, e.g. v0.1.0 (default: latest)
 #   MARQI_INSTALL_DIR   install directory (default: /usr/local/bin if writable,
 #                       otherwise ~/.local/bin)
+#   MARQI_ALLOW_UNVERIFIED=1  install when checksum verification is unavailable
 
 set -eu
 
@@ -84,7 +85,7 @@ trap 'rm -rf "$tmp"' EXIT
 say "Downloading $BIN $version ($target)..."
 download "$url" "$tmp/$archive"
 
-# --- verify the checksum when a sha256 tool is available ---
+# --- verify the checksum ---
 if download "$url.sha256" "$tmp/$archive.sha256" 2>/dev/null; then
     if have sha256sum; then
         (cd "$tmp" && sha256sum -c "$archive.sha256" >/dev/null) ||
@@ -92,11 +93,15 @@ if download "$url.sha256" "$tmp/$archive.sha256" 2>/dev/null; then
     elif have shasum; then
         (cd "$tmp" && shasum -a 256 -c "$archive.sha256" >/dev/null) ||
             err "checksum verification failed"
+    elif [ "${MARQI_ALLOW_UNVERIFIED:-}" = "1" ]; then
+        say "warning: no sha256 tool found; installing without verification"
     else
-        say "note: no sha256 tool found; skipping checksum verification"
+        err "sha256sum or shasum is required (or set MARQI_ALLOW_UNVERIFIED=1)"
     fi
+elif [ "${MARQI_ALLOW_UNVERIFIED:-}" = "1" ]; then
+    say "warning: checksum file unavailable; installing without verification"
 else
-    say "note: checksum file unavailable; skipping verification"
+    err "checksum file unavailable (or set MARQI_ALLOW_UNVERIFIED=1)"
 fi
 
 tar -xzf "$tmp/$archive" -C "$tmp"

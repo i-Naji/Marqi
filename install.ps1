@@ -9,6 +9,7 @@
 #   $env:MARQI_VERSION       install a specific tag, e.g. v0.1.0 (default: latest)
 #   $env:MARQI_INSTALL_DIR   install directory
 #   $env:MARQI_NO_MODIFY_PATH  set to skip the PATH update
+#   $env:MARQI_ALLOW_UNVERIFIED = "1"  install when the checksum is unavailable
 
 $ErrorActionPreference = "Stop"
 
@@ -45,12 +46,16 @@ try {
     $ZipPath = Join-Path $Tmp $Archive
     Invoke-WebRequest -Uri $Url -OutFile $ZipPath -UseBasicParsing
 
-    # Verify the published sha256 checksum; skip only if the file is missing.
+    # Verify the published sha256 checksum.
     $Expected = $null
     try {
         $Expected = ((Invoke-RestMethod "$Url.sha256") -split '\s+')[0].ToLower()
     } catch {
-        Write-Host "note: checksum file unavailable; skipping verification"
+        if ($env:MARQI_ALLOW_UNVERIFIED -eq "1") {
+            Write-Host "warning: checksum file unavailable; installing without verification"
+        } else {
+            throw "checksum file unavailable (or set MARQI_ALLOW_UNVERIFIED=1)"
+        }
     }
     if ($Expected) {
         $Actual = (Get-FileHash $ZipPath -Algorithm SHA256).Hash.ToLower()
