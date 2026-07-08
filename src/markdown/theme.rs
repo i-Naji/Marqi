@@ -113,6 +113,56 @@ pub struct MarkdownTheme {
 }
 
 impl MarkdownTheme {
+    pub fn is_known_name(value: &str) -> bool {
+        matches!(value.trim().to_ascii_lowercase().as_str(), "" | "default")
+            || theme_from_name(value).is_some()
+    }
+
+    pub fn is_override_key(value: &str) -> bool {
+        matches!(
+            value,
+            "text"
+                | "background"
+                | "editor_bg"
+                | "editor_background"
+                | "active_line"
+                | "active_line_bg"
+                | "gutter"
+                | "gutter_current"
+                | "status"
+                | "status_fg"
+                | "help_bg"
+                | "help_background"
+                | "heading1"
+                | "heading2"
+                | "heading3"
+                | "heading4"
+                | "heading5"
+                | "heading6"
+                | "code"
+                | "code_bg"
+                | "code_background"
+                | "link"
+                | "quote"
+                | "quote_bar"
+                | "marker"
+                | "list"
+                | "task_done"
+                | "task_todo"
+                | "rule"
+                | "table_header"
+                | "table_border"
+                | "html"
+                | "keyword"
+                | "keyword_misc"
+                | "keyword_note"
+                | "keyword_warn"
+                | "keyword_warning"
+                | "keyword_error"
+                | "selection"
+        )
+    }
+
     /// Select a theme from the config's two axes: a palette family name and a
     /// variant ("auto" detects the terminal background). An empty or unknown
     /// name picks the most popular face per mode — One Dark when dark,

@@ -30,6 +30,9 @@ use std::path::{Path, PathBuf};
 
 use serde::Deserialize;
 
+use crate::color::parse_hex;
+use crate::markdown::{CodeHighlighter, MarkdownTheme};
+
 #[derive(Deserialize, Default)]
 #[serde(default, deny_unknown_fields)]
 pub struct Config {
@@ -180,7 +183,7 @@ impl Config {
                 &["auto", "dark", "light"],
             ),
         ];
-        let bad: Vec<String> = fields
+        let mut bad: Vec<String> = fields
             .into_iter()
             .filter(|(_, value, allowed)| {
                 let v = value.trim().to_ascii_lowercase();
@@ -188,7 +191,28 @@ impl Config {
             })
             .map(|(name, value, _)| format!("{name} = \"{value}\""))
             .collect();
-        (!bad.is_empty()).then(|| format!("Config: unknown value(s): {}", bad.join(", ")))
+        if !MarkdownTheme::is_known_name(&self.theme.name) {
+            bad.push(format!("theme.name = \"{}\"", self.theme.name));
+        }
+        if let Some(syntax) = self.theme.syntax.as_deref()
+            && !CodeHighlighter::has_theme(syntax)
+        {
+            bad.push(format!("theme.syntax = \"{syntax}\""));
+        }
+        if self.editor.tab_width == 0 {
+            bad.push("editor.tab_width = 0".to_string());
+        }
+
+        let mut overrides: Vec<_> = self.theme.markdown.iter().collect();
+        overrides.sort_by_key(|(key, _)| *key);
+        for (key, value) in overrides {
+            if !MarkdownTheme::is_override_key(key) {
+                bad.push(format!("theme.markdown.{key}"));
+            } else if parse_hex(value).is_none() {
+                bad.push(format!("theme.markdown.{key} = \"{value}\""));
+            }
+        }
+        (!bad.is_empty()).then(|| format!("Config: invalid setting(s): {}", bad.join(", ")))
     }
 }
 
@@ -270,6 +294,25 @@ mod tests {
         let (cfg, warning) = Config::load_from_path(&path);
         assert!(warning.is_some(), "an unknown value must warn");
         assert_eq!(cfg.editor.keybindings, "vmi", "the config still loads");
+        std::fs::remove_file(&path).ok();
+    }
+
+    #[test]
+    fn invalid_theme_settings_warn() {
+        let path = temp_path("invalid_theme");
+        std::fs::write(
+            &path,
+            "[editor]\ntab_width = 0\n[theme]\nname = \"mystery\"\nsyntax = \"missing\"\n[theme.markdown]\nheading1 = \"red\"\nheding2 = \"#ffffff\"\n",
+        )
+        .unwrap();
+
+        let (_, warning) = Config::load_from_path(&path);
+        let warning = warning.expect("invalid theme settings should warn");
+        assert!(warning.contains("editor.tab_width = 0"));
+        assert!(warning.contains("theme.name"));
+        assert!(warning.contains("theme.syntax"));
+        assert!(warning.contains("theme.markdown.heading1"));
+        assert!(warning.contains("theme.markdown.heding2"));
         std::fs::remove_file(&path).ok();
     }
 

@@ -59,6 +59,10 @@ fn bundled_theme(name: &str) -> Option<&'static [u8]> {
 }
 
 impl CodeHighlighter {
+    pub fn has_theme(name: &str) -> bool {
+        bundled_theme(name).is_some() || ThemeSet::load_defaults().themes.contains_key(name)
+    }
+
     /// Build a highlighter using the named syntect theme — a bundled port, or
     /// one of syntect's defaults — falling back to a sensible default when
     /// `name` is `None` or unknown.

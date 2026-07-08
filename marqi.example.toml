@@ -9,7 +9,7 @@
 # Keybinding preset: "standard" (default), "vim", "nano", or "emacs".
 keybindings = "standard"
 # Line number gutter in hybrid editing mode: "off", "absolute", or "relative".
-line_numbers = "absolute"
+line_numbers = "off"
 # Preview-only symbols before rendered headings.
 heading_glyphs = true
 # How a single source newline renders in the preview: "space" (markdown reflow,
