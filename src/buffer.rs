@@ -8,6 +8,7 @@
 use std::fs;
 use std::io::{BufWriter, Write};
 use std::path::{Path, PathBuf};
+use std::time::SystemTime;
 
 use anyhow::{Context, Result};
 use ropey::Rope;
@@ -22,6 +23,20 @@ pub struct TextBuffer {
     /// Whether new lines should be `\r\n` (the file's dominant ending), so
     /// editing a CRLF file does not produce mixed endings.
     crlf: bool,
+    disk_state: DiskState,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum DiskState {
+    Missing,
+    Present(DiskFingerprint),
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+struct DiskFingerprint {
+    len: u64,
+    modified: Option<SystemTime>,
+    hash: u64,
 }
 
 impl TextBuffer {
@@ -33,6 +48,7 @@ impl TextBuffer {
             name: None,
             modified: false,
             crlf: false,
+            disk_state: DiskState::Missing,
         }
     }
 
@@ -45,6 +61,7 @@ impl TextBuffer {
             name: Some(name.to_string()),
             modified: false,
             crlf: detect_crlf(content),
+            disk_state: DiskState::Missing,
         }
     }
 
@@ -52,12 +69,16 @@ impl TextBuffer {
     /// buffer remembering that path (so a later save creates the file).
     pub fn from_path(path: impl AsRef<Path>) -> Result<Self> {
         let path = path.as_ref();
-        let (rope, crlf) = if path.exists() {
+        let (rope, crlf, disk_state) = if path.exists() {
             let text =
                 fs::read_to_string(path).with_context(|| format!("reading {}", path.display()))?;
-            (Rope::from_str(&text), detect_crlf(&text))
+            (
+                Rope::from_str(&text),
+                detect_crlf(&text),
+                fingerprint(path, text.as_bytes())?,
+            )
         } else {
-            (Rope::new(), false)
+            (Rope::new(), false, DiskState::Missing)
         };
         Ok(Self {
             rope,
@@ -65,6 +86,7 @@ impl TextBuffer {
             name: None,
             modified: false,
             crlf,
+            disk_state,
         })
     }
 
@@ -79,14 +101,47 @@ impl TextBuffer {
         self.path.is_some()
     }
 
+    pub fn path(&self) -> Option<&Path> {
+        self.path.as_deref()
+    }
+
+    pub fn has_external_change(&self) -> Result<bool> {
+        let Some(path) = self.path.as_deref() else {
+            return Ok(false);
+        };
+        Ok(fingerprint_from_disk(path)? != self.disk_state)
+    }
+
     /// Write the buffer back to its file atomically. Errors if the buffer is
     /// unnamed.
     pub fn save(&mut self) -> Result<()> {
+        if self.has_external_change()? {
+            anyhow::bail!("file changed on disk");
+        }
+        self.save_force()
+    }
+
+    pub fn save_force(&mut self) -> Result<()> {
         let path = self
             .path
             .as_ref()
             .context("no file name; nowhere to save")?;
         write_atomic(path, &self.rope).with_context(|| format!("saving {}", path.display()))?;
+        self.disk_state = fingerprint_from_disk(path)?;
+        self.modified = false;
+        Ok(())
+    }
+
+    pub fn reload(&mut self) -> Result<()> {
+        let path = self
+            .path
+            .as_ref()
+            .context("no file name; nowhere to reload")?;
+        let text =
+            fs::read_to_string(path).with_context(|| format!("reading {}", path.display()))?;
+        self.rope = Rope::from_str(&text);
+        self.crlf = detect_crlf(&text);
+        self.disk_state = fingerprint(path, text.as_bytes())?;
         self.modified = false;
         Ok(())
     }
@@ -96,6 +151,7 @@ impl TextBuffer {
     /// mistyped path does not bind the buffer to an unwritable destination.
     pub fn save_as(&mut self, path: PathBuf) -> Result<()> {
         write_atomic(&path, &self.rope).with_context(|| format!("saving {}", path.display()))?;
+        self.disk_state = fingerprint_from_disk(&path)?;
         self.path = Some(path);
         self.name = None;
         self.modified = false;
@@ -166,6 +222,28 @@ impl TextBuffer {
             .or_else(|| self.name.clone())
             .unwrap_or_else(|| "[No Name]".to_string())
     }
+}
+
+fn fingerprint_from_disk(path: &Path) -> Result<DiskState> {
+    match fs::read(path) {
+        Ok(bytes) => fingerprint(path, &bytes),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(DiskState::Missing),
+        Err(error) => Err(error).with_context(|| format!("reading {}", path.display())),
+    }
+}
+
+fn fingerprint(path: &Path, bytes: &[u8]) -> Result<DiskState> {
+    let metadata = fs::metadata(path).with_context(|| format!("reading {}", path.display()))?;
+    let mut hash = 0xcbf29ce484222325u64;
+    for byte in bytes {
+        hash ^= u64::from(*byte);
+        hash = hash.wrapping_mul(0x100000001b3);
+    }
+    Ok(DiskState::Present(DiskFingerprint {
+        len: metadata.len(),
+        modified: metadata.modified().ok(),
+        hash,
+    }))
 }
 
 /// Whether CRLF is the dominant line ending in `text`.
@@ -303,6 +381,24 @@ mod tests {
         let after = fs::read_to_string(&path).unwrap();
         assert_eq!(original, after, "save must not reformat the file");
 
+        fs::remove_file(&path).ok();
+    }
+
+    #[test]
+    fn save_detects_external_changes() {
+        let path = temp_path("external_change");
+        fs::write(&path, "original").unwrap();
+        let mut buf = TextBuffer::from_path(&path).unwrap();
+        buf.insert(0, "local ");
+        fs::write(&path, "external").unwrap();
+
+        assert!(buf.has_external_change().unwrap());
+        assert!(buf.save().is_err());
+        assert_eq!(fs::read_to_string(&path).unwrap(), "external");
+
+        buf.save_force().unwrap();
+        assert_eq!(fs::read_to_string(&path).unwrap(), "local original");
+        assert!(!buf.has_external_change().unwrap());
         fs::remove_file(&path).ok();
     }
 

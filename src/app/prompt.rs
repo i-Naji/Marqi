@@ -29,11 +29,20 @@ pub(super) enum Prompt {
     },
     /// Confirming an overwrite of an existing path; `input` is kept so `n` can
     /// return to editing the name.
-    Overwrite { path: PathBuf, input: String },
+    Overwrite {
+        path: PathBuf,
+        input: String,
+    },
     /// Confirming a quit while the buffer has unsaved changes.
     ConfirmQuit,
+    ExternalChange {
+        error: Option<String>,
+    },
     /// Incremental find; the current match is shown as the selection.
-    Find { input: String, cursor: usize },
+    Find {
+        input: String,
+        cursor: usize,
+    },
     /// Replace target for the find `query`.
     Replace {
         query: String,
@@ -91,6 +100,17 @@ impl App {
                 text: "Unsaved changes — quit without saving?  (y/n, w = write first)".to_string(),
                 cursor_col: None,
             }),
+            Prompt::ExternalChange { error } => {
+                let message =
+                    "File changed on disk — r reload · o overwrite · a save as · Esc cancel";
+                Some(PromptView {
+                    text: error.as_ref().map_or_else(
+                        || message.to_string(),
+                        |error| format!("{error} · {message}"),
+                    ),
+                    cursor_col: None,
+                })
+            }
             Prompt::Find { input, cursor } => {
                 let mut text = format!("{FIND_LABEL}{input}");
                 if !input.is_empty() {
@@ -139,6 +159,7 @@ impl App {
             }) => self.save_as_key(key, input, cursor),
             Some(Prompt::Overwrite { path, input }) => self.overwrite_key(key, path, input),
             Some(Prompt::ConfirmQuit) => self.confirm_quit_key(key),
+            Some(Prompt::ExternalChange { error: _ }) => self.external_change_key(key),
             Some(Prompt::Find { input, cursor }) => self.find_key(key, input, cursor),
             Some(Prompt::Replace {
                 query,
@@ -165,6 +186,38 @@ impl App {
                 self.status = Some("Quit cancelled".to_string());
             }
             _ => self.prompt = Some(Prompt::ConfirmQuit),
+        }
+    }
+
+    pub(super) fn open_external_change(&mut self) {
+        self.prompt = Some(Prompt::ExternalChange { error: None });
+    }
+
+    fn external_change_key(&mut self, key: KeyEvent) {
+        match key.code {
+            KeyCode::Char('r') | KeyCode::Char('R') => match self.reload_buffer() {
+                Ok(()) => self.status = Some("Reloaded".to_string()),
+                Err(error) => {
+                    self.prompt = Some(Prompt::ExternalChange {
+                        error: Some(format!("Reload failed: {error}")),
+                    });
+                }
+            },
+            KeyCode::Char('o') | KeyCode::Char('O') => self.write_buffer_force(),
+            KeyCode::Char('a') | KeyCode::Char('A') => {
+                let input = self
+                    .buffer
+                    .path()
+                    .map_or_else(|| ".md".to_string(), |path| path.display().to_string());
+                let cursor = input.len();
+                self.prompt = Some(Prompt::SaveAs {
+                    input,
+                    cursor,
+                    error: None,
+                });
+            }
+            KeyCode::Esc => self.status = Some("Save cancelled".to_string()),
+            _ => self.prompt = Some(Prompt::ExternalChange { error: None }),
         }
     }
 

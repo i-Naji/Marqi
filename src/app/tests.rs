@@ -1213,6 +1213,48 @@ fn auto_save_reports_failures_and_backs_off() {
 }
 
 #[test]
+fn manual_save_offers_to_reload_an_external_change() {
+    let path = std::env::temp_dir().join(format!("marqi_conflict_{}.md", std::process::id()));
+    std::fs::write(&path, "original").unwrap();
+    let mut a = App::with_config(TextBuffer::from_path(&path).unwrap(), &Config::default());
+    a.clipboard = Clipboard::internal_only();
+    type_str(&mut a, "local ");
+    std::fs::write(&path, "external").unwrap();
+
+    press_mod(&mut a, KeyCode::Char('s'), KeyModifiers::CONTROL);
+    assert!(a.prompt_view().unwrap().text.contains("changed on disk"));
+    press(&mut a, KeyCode::Char('r'));
+
+    assert_eq!(a.buffer.rope().to_string(), "external");
+    assert!(!a.buffer.modified());
+    assert_eq!(a.status.as_deref(), Some("Reloaded"));
+    std::fs::remove_file(&path).ok();
+}
+
+#[test]
+fn autosave_never_overwrites_an_external_change() {
+    let path =
+        std::env::temp_dir().join(format!("marqi_autosave_conflict_{}.md", std::process::id()));
+    std::fs::write(&path, "original").unwrap();
+    let cfg: Config = toml::from_str("[editor]\nauto_save = true\n").unwrap();
+    let mut a = App::with_config(TextBuffer::from_path(&path).unwrap(), &cfg);
+    a.clipboard = Clipboard::internal_only();
+    type_str(&mut a, "local ");
+    std::fs::write(&path, "external").unwrap();
+    a.last_edit = Some(Instant::now() - Duration::from_secs(3));
+
+    a.tick();
+
+    assert_eq!(std::fs::read_to_string(&path).unwrap(), "external");
+    assert!(a.buffer.modified());
+    assert_eq!(
+        a.status.as_deref(),
+        Some("Auto-save paused: file changed on disk")
+    );
+    std::fs::remove_file(&path).ok();
+}
+
+#[test]
 fn cmd_super_modifier_acts_as_ctrl() {
     let mut a = app_with("hello");
     type_str(&mut a, "x");

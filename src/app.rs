@@ -1153,6 +1153,19 @@ impl App {
         if !idle {
             return;
         }
+        match self.buffer.has_external_change() {
+            Ok(true) => {
+                self.auto_save_retry_at = Some(now + AUTO_SAVE_RETRY_DELAY);
+                self.status = Some("Auto-save paused: file changed on disk".to_string());
+                return;
+            }
+            Err(error) => {
+                self.auto_save_retry_at = Some(now + AUTO_SAVE_RETRY_DELAY);
+                self.status = Some(format!("Auto-save failed: {error}"));
+                return;
+            }
+            Ok(false) => {}
+        }
         match self.buffer.save() {
             Ok(()) => {
                 self.history.mark_saved();
@@ -1477,7 +1490,11 @@ impl App {
 
     fn save(&mut self) {
         if self.buffer.has_path() {
-            self.write_buffer();
+            match self.buffer.has_external_change() {
+                Ok(true) => self.open_external_change(),
+                Ok(false) => self.write_buffer(),
+                Err(error) => self.status = Some(format!("Error: {error}")),
+            }
         } else {
             self.open_save_as();
         }
@@ -1493,6 +1510,36 @@ impl App {
             }
             Err(e) => format!("Error: {e}"),
         });
+    }
+
+    fn write_buffer_force(&mut self) {
+        self.status = Some(match self.buffer.save_force() {
+            Ok(()) => {
+                self.history.mark_saved();
+                self.auto_save_retry_at = None;
+                "Saved".to_string()
+            }
+            Err(error) => format!("Error: {error}"),
+        });
+    }
+
+    fn reload_buffer(&mut self) -> anyhow::Result<()> {
+        self.buffer.reload()?;
+        self.cursor.byte = self.cursor.byte.min(self.buffer.len_bytes());
+        self.selection_anchor = None;
+        self.history = History::new();
+        self.layout = Layout::build(self.buffer.rope(), self.wrap_width, self.tab_width);
+        self.layout_width = self.wrap_width;
+        self.layout_dirty = false;
+        self.line_index = LineIndex::build(self.buffer.rope());
+        self.version += 1;
+        self.view = None;
+        self.view_cache = ViewCache::default();
+        self.preview_view = None;
+        self.preview_dirty = true;
+        self.scroll_y = 0;
+        self.auto_save_retry_at = None;
+        Ok(())
     }
 
     // --- layout & scrolling ---
