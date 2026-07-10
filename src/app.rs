@@ -184,6 +184,8 @@ pub struct App {
     /// When the buffer was last edited, for the auto-save idle check.
     last_edit: Option<Instant>,
     auto_save_retry_at: Option<Instant>,
+    recovery_content: Option<String>,
+    recovery_written_version: u64,
 
     /// Whether drawing should keep the cursor in view. Cleared by wheel
     /// scrolling so the user can read elsewhere; any keypress restores it.
@@ -268,6 +270,8 @@ impl App {
             auto_save: false,
             last_edit: None,
             auto_save_retry_at: None,
+            recovery_content: None,
+            recovery_written_version: 0,
             follow_cursor: true,
             mouse_press_byte: None,
             tab_width: DEFAULT_TAB_WIDTH,
@@ -1133,7 +1137,10 @@ impl App {
 
     /// Whether the idle loop should tick (poll with a timeout) for auto-save.
     pub fn wants_tick(&self) -> bool {
-        self.auto_save && self.buffer.modified() && self.buffer.has_path() && self.prompt.is_none()
+        self.buffer.modified()
+            && self.prompt.is_none()
+            && (self.recovery_written_version != self.version
+                || (self.auto_save && self.buffer.has_path()))
     }
 
     /// Idle callback from the event loop: auto-save once the buffer has been
@@ -1151,6 +1158,19 @@ impl App {
             .last_edit
             .is_none_or(|at| at.elapsed() >= AUTO_SAVE_DELAY);
         if !idle {
+            return;
+        }
+        if self.recovery_written_version != self.version {
+            match self.buffer.write_recovery() {
+                Ok(()) => self.recovery_written_version = self.version,
+                Err(error) => {
+                    self.auto_save_retry_at = Some(now + AUTO_SAVE_RETRY_DELAY);
+                    self.status = Some(format!("Recovery failed: {error}"));
+                    return;
+                }
+            }
+        }
+        if !self.auto_save || !self.buffer.has_path() {
             return;
         }
         match self.buffer.has_external_change() {
@@ -1525,9 +1545,14 @@ impl App {
 
     fn reload_buffer(&mut self) -> anyhow::Result<()> {
         self.buffer.reload()?;
+        self.history = History::new();
+        self.reset_after_buffer_change();
+        Ok(())
+    }
+
+    fn reset_after_buffer_change(&mut self) {
         self.cursor.byte = self.cursor.byte.min(self.buffer.len_bytes());
         self.selection_anchor = None;
-        self.history = History::new();
         self.layout = Layout::build(self.buffer.rope(), self.wrap_width, self.tab_width);
         self.layout_width = self.wrap_width;
         self.layout_dirty = false;
@@ -1539,6 +1564,30 @@ impl App {
         self.preview_dirty = true;
         self.scroll_y = 0;
         self.auto_save_retry_at = None;
+        self.recovery_written_version = self.version;
+    }
+
+    pub fn offer_recovery(&mut self) {
+        match self.buffer.load_recovery() {
+            Ok(Some(content)) => {
+                self.recovery_content = Some(content);
+                self.prompt = Some(prompt::Prompt::Recovery { error: None });
+            }
+            Ok(None) => {}
+            Err(error) => self.status = Some(format!("Recovery unavailable: {error}")),
+        }
+    }
+
+    fn restore_recovery(&mut self) -> anyhow::Result<()> {
+        let content = self
+            .recovery_content
+            .take()
+            .ok_or_else(|| anyhow::anyhow!("recovery content is unavailable"))?;
+        self.buffer.restore_recovery(&content);
+        self.history = History::new();
+        self.history.mark_unsaved();
+        self.reset_after_buffer_change();
+        self.last_edit = Some(Instant::now());
         Ok(())
     }
 

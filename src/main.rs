@@ -100,6 +100,7 @@ fn run_editor(path: Option<String>, config_path: Option<PathBuf>) -> Result<()> 
     if let Some(warning) = config_warning {
         app.status = Some(warning);
     }
+    app.offer_recovery();
 
     let mut terminal = tui::init()?;
     let result = run(&mut terminal, &mut app);

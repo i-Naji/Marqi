@@ -38,6 +38,9 @@ pub(super) enum Prompt {
     ExternalChange {
         error: Option<String>,
     },
+    Recovery {
+        error: Option<String>,
+    },
     /// Incremental find; the current match is shown as the selection.
     Find {
         input: String,
@@ -111,6 +114,16 @@ impl App {
                     cursor_col: None,
                 })
             }
+            Prompt::Recovery { error } => {
+                let message = "Unsaved recovery found — r restore · d discard";
+                Some(PromptView {
+                    text: error.as_ref().map_or_else(
+                        || message.to_string(),
+                        |error| format!("{error} · {message}"),
+                    ),
+                    cursor_col: None,
+                })
+            }
             Prompt::Find { input, cursor } => {
                 let mut text = format!("{FIND_LABEL}{input}");
                 if !input.is_empty() {
@@ -160,6 +173,7 @@ impl App {
             Some(Prompt::Overwrite { path, input }) => self.overwrite_key(key, path, input),
             Some(Prompt::ConfirmQuit) => self.confirm_quit_key(key),
             Some(Prompt::ExternalChange { error: _ }) => self.external_change_key(key),
+            Some(Prompt::Recovery { error: _ }) => self.recovery_key(key),
             Some(Prompt::Find { input, cursor }) => self.find_key(key, input, cursor),
             Some(Prompt::Replace {
                 query,
@@ -218,6 +232,33 @@ impl App {
             }
             KeyCode::Esc => self.status = Some("Save cancelled".to_string()),
             _ => self.prompt = Some(Prompt::ExternalChange { error: None }),
+        }
+    }
+
+    fn recovery_key(&mut self, key: KeyEvent) {
+        match key.code {
+            KeyCode::Char('r') | KeyCode::Char('R') => match self.restore_recovery() {
+                Ok(()) => self.status = Some("Recovery restored".to_string()),
+                Err(error) => {
+                    self.prompt = Some(Prompt::Recovery {
+                        error: Some(format!("Restore failed: {error}")),
+                    });
+                }
+            },
+            KeyCode::Char('d') | KeyCode::Char('D') | KeyCode::Esc => {
+                match self.buffer.discard_recovery() {
+                    Ok(()) => {
+                        self.recovery_content = None;
+                        self.status = Some("Recovery discarded".to_string());
+                    }
+                    Err(error) => {
+                        self.prompt = Some(Prompt::Recovery {
+                            error: Some(format!("Discard failed: {error}")),
+                        });
+                    }
+                }
+            }
+            _ => self.prompt = Some(Prompt::Recovery { error: None }),
         }
     }
 

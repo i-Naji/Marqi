@@ -56,6 +56,11 @@ impl History {
         self.saved_depth = Some(self.depth());
     }
 
+    pub fn mark_unsaved(&mut self) {
+        self.open = false;
+        self.saved_depth = None;
+    }
+
     /// Whether undo/redo has returned the buffer to the last-saved state.
     pub fn at_saved_state(&self) -> bool {
         self.saved_depth == Some(self.depth())

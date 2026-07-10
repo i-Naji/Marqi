@@ -1255,6 +1255,35 @@ fn autosave_never_overwrites_an_external_change() {
 }
 
 #[test]
+fn recovery_restores_an_unsaved_document() {
+    let path = std::env::temp_dir().join(format!("marqi_recovery_{}.md", std::process::id()));
+    std::fs::write(&path, "original").unwrap();
+    let mut edited = App::with_config(TextBuffer::from_path(&path).unwrap(), &Config::default());
+    edited.clipboard = Clipboard::internal_only();
+    type_str(&mut edited, "local ");
+    edited.last_edit = Some(Instant::now() - Duration::from_secs(3));
+    edited.tick();
+
+    let mut reopened = App::with_config(TextBuffer::from_path(&path).unwrap(), &Config::default());
+    reopened.clipboard = Clipboard::internal_only();
+    reopened.offer_recovery();
+    assert!(
+        reopened
+            .prompt_view()
+            .unwrap()
+            .text
+            .contains("recovery found")
+    );
+    press(&mut reopened, KeyCode::Char('r'));
+
+    assert_eq!(reopened.buffer.rope().to_string(), "local original");
+    assert!(reopened.buffer.modified());
+    assert_eq!(reopened.status.as_deref(), Some("Recovery restored"));
+    reopened.buffer.discard_recovery().unwrap();
+    std::fs::remove_file(&path).ok();
+}
+
+#[test]
 fn cmd_super_modifier_acts_as_ctrl() {
     let mut a = app_with("hello");
     type_str(&mut a, "x");

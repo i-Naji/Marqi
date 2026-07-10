@@ -13,6 +13,8 @@ use std::time::SystemTime;
 use anyhow::{Context, Result};
 use ropey::Rope;
 
+const MAX_RECOVERY_BYTES: usize = 32 * 1024 * 1024;
+
 /// An in-memory document backed by a rope.
 pub struct TextBuffer {
     rope: Rope,
@@ -129,6 +131,7 @@ impl TextBuffer {
         write_atomic(path, &self.rope).with_context(|| format!("saving {}", path.display()))?;
         self.disk_state = fingerprint_from_disk(path)?;
         self.modified = false;
+        let _ = self.discard_recovery();
         Ok(())
     }
 
@@ -155,7 +158,57 @@ impl TextBuffer {
         self.path = Some(path);
         self.name = None;
         self.modified = false;
+        let _ = self.discard_recovery();
         Ok(())
+    }
+
+    pub fn write_recovery(&self) -> Result<()> {
+        if self.len_bytes() > MAX_RECOVERY_BYTES {
+            anyhow::bail!("document is too large for automatic recovery");
+        }
+        let path = self
+            .recovery_path()
+            .context("recovery directory is unavailable")?;
+        if let Some(parent) = path.parent() {
+            fs::create_dir_all(parent).with_context(|| format!("creating {}", parent.display()))?;
+        }
+        write_atomic(&path, &self.rope)
+            .with_context(|| format!("writing recovery {}", path.display()))
+    }
+
+    pub fn load_recovery(&self) -> Result<Option<String>> {
+        let Some(path) = self.recovery_path() else {
+            return Ok(None);
+        };
+        let recovered = match fs::read_to_string(&path) {
+            Ok(content) => content,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+            Err(error) => {
+                return Err(error).with_context(|| format!("reading {}", path.display()));
+            }
+        };
+        if recovered == self.rope {
+            let _ = fs::remove_file(path);
+            return Ok(None);
+        }
+        Ok(Some(recovered))
+    }
+
+    pub fn discard_recovery(&self) -> Result<()> {
+        let Some(path) = self.recovery_path() else {
+            return Ok(());
+        };
+        match fs::remove_file(&path) {
+            Ok(()) => Ok(()),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+            Err(error) => Err(error).with_context(|| format!("removing {}", path.display())),
+        }
+    }
+
+    pub fn restore_recovery(&mut self, content: &str) {
+        self.rope = Rope::from_str(content);
+        self.crlf = detect_crlf(content);
+        self.modified = true;
     }
 
     /// Insert `text` at byte offset `byte`. Returns the byte offset just past
@@ -222,6 +275,38 @@ impl TextBuffer {
             .or_else(|| self.name.clone())
             .unwrap_or_else(|| "[No Name]".to_string())
     }
+
+    fn recovery_path(&self) -> Option<PathBuf> {
+        let dirs = directories::ProjectDirs::from("", "", "marqi")?;
+        let identity = match self.path.as_deref() {
+            Some(path) => fs::canonicalize(path)
+                .or_else(|_| {
+                    if path.is_absolute() {
+                        Ok(path.to_path_buf())
+                    } else {
+                        std::env::current_dir().map(|dir| dir.join(path))
+                    }
+                })
+                .ok()?
+                .to_string_lossy()
+                .into_owned(),
+            None => self.name.clone().unwrap_or_else(|| "scratch".to_string()),
+        };
+        Some(
+            dirs.cache_dir()
+                .join("recovery")
+                .join(format!("{:016x}.md", stable_hash(identity.as_bytes()))),
+        )
+    }
+}
+
+fn stable_hash(bytes: &[u8]) -> u64 {
+    let mut hash = 0xcbf29ce484222325u64;
+    for byte in bytes {
+        hash ^= u64::from(*byte);
+        hash = hash.wrapping_mul(0x100000001b3);
+    }
+    hash
 }
 
 fn fingerprint_from_disk(path: &Path) -> Result<DiskState> {
@@ -234,15 +319,10 @@ fn fingerprint_from_disk(path: &Path) -> Result<DiskState> {
 
 fn fingerprint(path: &Path, bytes: &[u8]) -> Result<DiskState> {
     let metadata = fs::metadata(path).with_context(|| format!("reading {}", path.display()))?;
-    let mut hash = 0xcbf29ce484222325u64;
-    for byte in bytes {
-        hash ^= u64::from(*byte);
-        hash = hash.wrapping_mul(0x100000001b3);
-    }
     Ok(DiskState::Present(DiskFingerprint {
         len: metadata.len(),
         modified: metadata.modified().ok(),
-        hash,
+        hash: stable_hash(bytes),
     }))
 }
 
