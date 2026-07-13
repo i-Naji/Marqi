@@ -534,7 +534,7 @@ impl App {
         // before the help/read checks so they work in every preset and mode. In
         // the Emacs preset, ^P and ^B therefore shadow previous-line /
         // backward-char — use the arrow keys for those.
-        if ctrl && self.handle_global_ctrl(key.code) {
+        if ctrl && self.handle_global_ctrl(key) {
             // A global shortcut also ends any pending multi-key chord (Vim
             // `d`/`g`/`y`, Emacs `C-x`); otherwise the stale leader would
             // swallow or reinterpret the next keystroke.
@@ -581,9 +581,12 @@ impl App {
     }
 
     /// Dispatch a global Ctrl shortcut. Returns whether the key was handled.
-    fn handle_global_ctrl(&mut self, code: KeyCode) -> bool {
-        match code {
+    fn handle_global_ctrl(&mut self, key: KeyEvent) -> bool {
+        match key.code {
             KeyCode::Char('q') => self.request_quit(),
+            KeyCode::Char('s' | 'S') if key.modifiers.contains(KeyModifiers::SHIFT) => {
+                self.open_save_as_current()
+            }
             KeyCode::Char('s') => self.save(),
             KeyCode::Char('g') => self.open_menu(),
             KeyCode::Char('p') => self.toggle_preview(),

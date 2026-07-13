@@ -71,6 +71,19 @@ impl App {
         });
     }
 
+    pub(super) fn open_save_as_current(&mut self) {
+        let input = self
+            .buffer
+            .path()
+            .map_or_else(|| ".md".to_string(), |path| path.display().to_string());
+        let cursor = input.len();
+        self.prompt = Some(Prompt::SaveAs {
+            input,
+            cursor,
+            error: None,
+        });
+    }
+
     /// Ask before quitting with unsaved changes.
     pub(super) fn open_confirm_quit(&mut self) {
         self.prompt = Some(Prompt::ConfirmQuit);

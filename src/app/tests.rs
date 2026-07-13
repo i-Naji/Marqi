@@ -729,6 +729,40 @@ fn save_as_can_be_cancelled() {
 }
 
 #[test]
+fn named_document_can_be_saved_as() {
+    let original = std::env::temp_dir().join(format!("marqi_original_{}.md", std::process::id()));
+    let copy = std::env::temp_dir().join(format!("marqi_copy_{}.md", std::process::id()));
+    std::fs::write(&original, "text").unwrap();
+    std::fs::remove_file(&copy).ok();
+    let mut a = App::with_config(
+        TextBuffer::from_path(&original).unwrap(),
+        &Config::default(),
+    );
+    a.clipboard = Clipboard::internal_only();
+    type_str(&mut a, "x");
+
+    press_mod(
+        &mut a,
+        KeyCode::Char('s'),
+        KeyModifiers::CONTROL | KeyModifiers::SHIFT,
+    );
+    let prompt = a.prompt_view().expect("save as prompt");
+    assert!(prompt.text.ends_with(original.to_str().unwrap()));
+    press(&mut a, KeyCode::Home);
+    for _ in 0..original.to_string_lossy().len() {
+        press(&mut a, KeyCode::Delete);
+    }
+    type_str(&mut a, copy.to_str().unwrap());
+    press(&mut a, KeyCode::Enter);
+
+    assert_eq!(std::fs::read_to_string(&original).unwrap(), "text");
+    assert_eq!(std::fs::read_to_string(&copy).unwrap(), "xtext");
+    assert_eq!(a.buffer.path(), Some(copy.as_path()));
+    std::fs::remove_file(&original).ok();
+    std::fs::remove_file(&copy).ok();
+}
+
+#[test]
 fn save_as_keeps_write_errors_visible() {
     let mut a = app();
     type_str(&mut a, "draft");

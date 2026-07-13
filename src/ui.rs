@@ -325,8 +325,8 @@ fn guide_lines(app: &App) -> Vec<Line<'static>> {
     let mut out = vec![
         Line::from(Span::styled(format!("Global \u{b7} {plat}"), heading)),
         guide_row(
-            format!("{} / {}", ck("S"), ck("Q")),
-            "save \u{b7} quit",
+            format!("{} / {} / {}", ck("S"), sk(&ck("S")), ck("Q")),
+            "save \u{b7} save as \u{b7} quit",
             key,
             text,
         ),
