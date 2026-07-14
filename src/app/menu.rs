@@ -16,7 +16,8 @@ const ROW_KEYBINDINGS: usize = 0;
 const ROW_THEME: usize = 1;
 const ROW_APPEARANCE: usize = 2;
 const ROW_LINE_NUMBERS: usize = 3;
-const LAST_ROW: usize = ROW_LINE_NUMBERS;
+const ROW_SAVE_DEFAULTS: usize = 4;
+const LAST_ROW: usize = ROW_SAVE_DEFAULTS;
 
 /// Preset cycle order for the keybindings row.
 const PRESETS: [Preset; 4] = [Preset::Standard, Preset::Vim, Preset::Nano, Preset::Emacs];
@@ -60,7 +61,10 @@ impl App {
         };
         let focus = menu.focus;
 
-        // Accept (keep the live changes): Enter or ^G.
+        if key.code == KeyCode::Enter && focus == ROW_SAVE_DEFAULTS {
+            self.save_menu_defaults();
+            return;
+        }
         if key.code == KeyCode::Enter
             || (ctrl_like(key.modifiers) && key.code == KeyCode::Char('g'))
         {
@@ -136,6 +140,34 @@ impl App {
             }
             _ => {}
         }
+    }
+
+    fn save_menu_defaults(&mut self) {
+        let Some(path) = self.config_path.as_deref() else {
+            self.status = Some("Config directory is unavailable".to_string());
+            self.menu = None;
+            return;
+        };
+        let keybindings = self.preset_label().to_ascii_lowercase();
+        let line_numbers = match self.line_numbers {
+            LineNumbers::Off => "off",
+            LineNumbers::Absolute => "absolute",
+            LineNumbers::Relative => "relative",
+        };
+        let variant = self.theme.variant.label().to_ascii_lowercase();
+        self.status = Some(
+            match crate::config::save_runtime_settings(
+                path,
+                &keybindings,
+                line_numbers,
+                self.theme.name.config_name(),
+                &variant,
+            ) {
+                Ok(()) => "Settings saved".to_string(),
+                Err(error) => format!("Settings not saved: {error}"),
+            },
+        );
+        self.menu = None;
     }
 }
 

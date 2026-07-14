@@ -74,6 +74,20 @@ impl ThemeName {
             ThemeName::Solarized => "Solarized",
         }
     }
+
+    pub fn config_name(self) -> &'static str {
+        match self {
+            ThemeName::Marqi => "marqi",
+            ThemeName::OneDark => "onedark",
+            ThemeName::Github => "github",
+            ThemeName::Catppuccin => "catppuccin",
+            ThemeName::TokyoNight => "tokyonight",
+            ThemeName::Gruvbox => "gruvbox",
+            ThemeName::Nord => "nord",
+            ThemeName::Dracula => "dracula",
+            ThemeName::Solarized => "solarized",
+        }
+    }
 }
 
 pub struct MarkdownTheme {

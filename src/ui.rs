@@ -506,11 +506,12 @@ fn setting_rows(app: &App) -> Vec<Line<'static>> {
         LineNumbers::Absolute => "absolute",
         LineNumbers::Relative => "relative",
     };
-    let rows: [(&str, &str); 4] = [
+    let rows: [(&str, &str); 5] = [
         ("Keybindings", kb),
         ("Theme", theme.name.label()),
         ("Appearance", theme.variant.label()),
         ("Line numbers", ln),
+        ("Save defaults", "Enter"),
     ];
     rows.iter()
         .enumerate()

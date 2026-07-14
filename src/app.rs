@@ -227,6 +227,7 @@ pub struct App {
     /// Explicit syntect theme from config (`theme.syntax`), or `None` to follow
     /// each palette's default code-block pairing.
     syntax_override: Option<String>,
+    config_path: Option<std::path::PathBuf>,
     preview_view: Option<PreviewView>,
     preview_width: usize,
     preview_dirty: bool,
@@ -289,6 +290,7 @@ impl App {
             highlighter: CodeHighlighter::new(None),
             theme_overrides: HashMap::new(),
             syntax_override: None,
+            config_path: None,
             preview_view: None,
             preview_width: 0,
             preview_dirty: true,
@@ -345,6 +347,7 @@ impl App {
         // palette switch.
         app.theme_overrides = config.theme.markdown.clone();
         app.syntax_override = config.theme.syntax.clone();
+        app.config_path = config.source_path().map(std::path::Path::to_path_buf);
         let syntax = config
             .theme
             .syntax

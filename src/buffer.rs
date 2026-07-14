@@ -341,7 +341,7 @@ fn detect_crlf(text: &str) -> bool {
 /// Known tradeoff: replacing by rename gives a file a new inode, so other hard
 /// links to the old content are left behind (symlinks are handled — the path is
 /// resolved first, so the link's *target* is replaced, not the link).
-fn write_atomic(path: &Path, rope: &Rope) -> Result<()> {
+pub(crate) fn write_atomic(path: &Path, rope: &Rope) -> Result<()> {
     // Resolve symlinks so saving through one replaces the real file instead of
     // severing the link. A path that does not exist yet resolves to itself.
     let path = &fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());

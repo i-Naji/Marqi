@@ -38,6 +38,8 @@ use crate::markdown::{CodeHighlighter, MarkdownTheme};
 pub struct Config {
     pub editor: EditorConfig,
     pub theme: ThemeConfig,
+    #[serde(skip)]
+    source_path: Option<PathBuf>,
 }
 
 #[derive(Deserialize)]
@@ -122,7 +124,7 @@ impl Config {
         };
         if !path.exists() {
             return (
-                Self::default(),
+                Self::defaults_at(&path),
                 Some(format!("Config not found: {}", path.display())),
             );
         }
@@ -138,24 +140,38 @@ impl Config {
     fn load_from_path(path: &Path) -> (Self, Option<String>) {
         let text = match std::fs::read_to_string(path) {
             Ok(text) => text,
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return (Self::default(), None),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                return (Self::defaults_at(path), None);
+            }
             Err(e) => {
                 return (
-                    Self::default(),
+                    Self::defaults_at(path),
                     Some(format!("Config ignored: {} ({e})", path.display())),
                 );
             }
         };
         match toml::from_str::<Self>(&text) {
-            Ok(config) => {
+            Ok(mut config) => {
+                config.source_path = Some(path.to_path_buf());
                 let warning = config.validate_warning();
                 (config, warning)
             }
             Err(e) => (
-                Self::default(),
+                Self::defaults_at(path),
                 Some(format!("Config ignored: {} ({e})", path.display())),
             ),
         }
+    }
+
+    fn defaults_at(path: &Path) -> Self {
+        Self {
+            source_path: Some(path.to_path_buf()),
+            ..Self::default()
+        }
+    }
+
+    pub fn source_path(&self) -> Option<&Path> {
+        self.source_path.as_deref()
     }
 
     /// Warn about values that parse as strings but match no known variant —
@@ -214,6 +230,104 @@ impl Config {
         }
         (!bad.is_empty()).then(|| format!("Config: invalid setting(s): {}", bad.join(", ")))
     }
+}
+
+pub fn save_runtime_settings(
+    path: &Path,
+    keybindings: &str,
+    line_numbers: &str,
+    theme: &str,
+    variant: &str,
+) -> anyhow::Result<()> {
+    let mut text = match std::fs::read_to_string(path) {
+        Ok(text) => text,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => String::new(),
+        Err(error) => return Err(error.into()),
+    };
+    set_toml_value(&mut text, "editor", "keybindings", keybindings);
+    set_toml_value(&mut text, "editor", "line_numbers", line_numbers);
+    set_toml_value(&mut text, "theme", "name", theme);
+    set_toml_value(&mut text, "theme", "variant", variant);
+    if let Some(parent) = path.parent()
+        && !parent.as_os_str().is_empty()
+    {
+        std::fs::create_dir_all(parent)?;
+    }
+    crate::buffer::write_atomic(path, &ropey::Rope::from_str(&text))
+}
+
+fn set_toml_value(text: &mut String, section: &str, key: &str, value: &str) {
+    let mut lines: Vec<String> = text.split_inclusive('\n').map(str::to_string).collect();
+    if !text.is_empty() && !text.ends_with('\n') {
+        let tail = text
+            .rsplit_once('\n')
+            .map_or(text.as_str(), |(_, tail)| tail);
+        if lines.last().is_none_or(|line| line.ends_with('\n')) {
+            lines.push(tail.to_string());
+        }
+    }
+
+    let header = format!("[{section}]");
+    let Some(start) = lines.iter().position(|line| line.trim() == header) else {
+        if !text.is_empty() && !text.ends_with('\n') {
+            lines.push("\n".to_string());
+        }
+        if !lines.is_empty() && lines.last().is_some_and(|line| !line.trim().is_empty()) {
+            lines.push("\n".to_string());
+        }
+        lines.push(format!("{header}\n"));
+        lines.push(format!("{key} = \"{value}\"\n"));
+        *text = lines.concat();
+        return;
+    };
+    let end = lines[start + 1..]
+        .iter()
+        .position(|line| line.trim_start().starts_with('['))
+        .map_or(lines.len(), |offset| start + 1 + offset);
+    if let Some(index) = (start + 1..end).find(|&index| assignment_key(&lines[index]) == Some(key))
+    {
+        lines[index] = replace_assignment(&lines[index], value);
+    } else {
+        lines.insert(end, format!("{key} = \"{value}\"\n"));
+    }
+    *text = lines.concat();
+}
+
+fn assignment_key(line: &str) -> Option<&str> {
+    let body = line.trim_start();
+    let (key, _) = body.split_once('=')?;
+    Some(key.trim())
+}
+
+fn replace_assignment(line: &str, value: &str) -> String {
+    let newline = if line.ends_with('\n') { "\n" } else { "" };
+    let body = line.trim_end_matches('\n');
+    let equal = body.find('=').expect("assignment has an equals sign");
+    let after = &body[equal + 1..];
+    let comment = unquoted_comment(after).map_or("", |index| after[index..].trim_start());
+    let suffix = if comment.is_empty() {
+        String::new()
+    } else {
+        format!("  {comment}")
+    };
+    format!("{} \"{value}\"{suffix}{newline}", &body[..=equal])
+}
+
+fn unquoted_comment(value: &str) -> Option<usize> {
+    let mut quoted = false;
+    let mut escaped = false;
+    for (index, ch) in value.char_indices() {
+        if escaped {
+            escaped = false;
+        } else if ch == '\\' && quoted {
+            escaped = true;
+        } else if ch == '"' {
+            quoted = !quoted;
+        } else if ch == '#' && !quoted {
+            return Some(index);
+        }
+    }
+    None
 }
 
 #[cfg(test)]
@@ -313,6 +427,28 @@ mod tests {
         assert!(warning.contains("theme.syntax"));
         assert!(warning.contains("theme.markdown.heading1"));
         assert!(warning.contains("theme.markdown.heding2"));
+        std::fs::remove_file(&path).ok();
+    }
+
+    #[test]
+    fn saving_runtime_settings_preserves_other_content() {
+        let path = temp_path("save_runtime");
+        std::fs::write(
+            &path,
+            "# personal config\n[editor]\nkeybindings = \"standard\" # keep this\ntab_width = 2\n\n[theme.markdown]\nheading1 = \"#abcdef\"\n",
+        )
+        .unwrap();
+
+        save_runtime_settings(&path, "vim", "relative", "nord", "light").unwrap();
+
+        let text = std::fs::read_to_string(&path).unwrap();
+        assert!(text.contains("# personal config"));
+        assert!(text.contains("keybindings = \"vim\"  # keep this"));
+        assert!(text.contains("tab_width = 2"));
+        assert!(text.contains("heading1 = \"#abcdef\""));
+        assert!(text.contains("line_numbers = \"relative\""));
+        assert!(text.contains("name = \"nord\""));
+        assert!(text.contains("variant = \"light\""));
         std::fs::remove_file(&path).ok();
     }
 

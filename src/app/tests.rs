@@ -509,6 +509,37 @@ fn menu_edits_line_numbers_live_with_esc_revert() {
 }
 
 #[test]
+fn menu_can_save_defaults_to_the_active_config() {
+    let path = std::env::temp_dir().join(format!("marqi_menu_config_{}.toml", std::process::id()));
+    std::fs::write(
+        &path,
+        "[editor]\nkeybindings = \"standard\"\ntab_width = 2\n\n[theme]\nname = \"marqi\"\nvariant = \"dark\"\n",
+    )
+    .unwrap();
+    let (cfg, warning) = Config::load_from_arg_with_warning(&path);
+    assert!(warning.is_none());
+    let mut a = App::with_config(TextBuffer::empty(), &cfg);
+    a.clipboard = Clipboard::internal_only();
+
+    press_mod(&mut a, KeyCode::Char('g'), KeyModifiers::CONTROL);
+    press(&mut a, KeyCode::Right);
+    press(&mut a, KeyCode::Down);
+    press(&mut a, KeyCode::Right);
+    press(&mut a, KeyCode::Down);
+    press(&mut a, KeyCode::Down);
+    press(&mut a, KeyCode::Right);
+    press(&mut a, KeyCode::Down);
+    press(&mut a, KeyCode::Enter);
+
+    let text = std::fs::read_to_string(&path).unwrap();
+    assert!(text.contains("keybindings = \"vim\""));
+    assert!(text.contains("line_numbers = \"absolute\""));
+    assert!(text.contains("tab_width = 2"));
+    assert_eq!(a.status.as_deref(), Some("Settings saved"));
+    std::fs::remove_file(&path).ok();
+}
+
+#[test]
 fn read_mode_q_returns_to_focus() {
     let mut a = vim_app();
     press_mod(&mut a, KeyCode::Char('p'), KeyModifiers::CONTROL);
