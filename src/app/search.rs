@@ -11,6 +11,16 @@
 
 use super::App;
 use super::prompt::Prompt;
+use std::rc::Rc;
+
+#[derive(Default)]
+pub(super) struct SearchCache {
+    version: u64,
+    query: String,
+    matches: Rc<[usize]>,
+    valid: bool,
+    pub(super) scans: usize,
+}
 
 impl App {
     /// Open the find prompt, seeded with the current selection (if it is a
@@ -130,9 +140,15 @@ impl App {
     /// Every match start, in order. Smart case: an all-lowercase query
     /// matches ASCII case-insensitively. Byte-wise comparison is boundary-safe
     /// because non-ASCII bytes only match exactly.
-    pub(super) fn search_matches(&self, query: &str) -> Vec<usize> {
+    pub(super) fn search_matches(&self, query: &str) -> Rc<[usize]> {
         if query.is_empty() {
-            return Vec::new();
+            return Rc::from([]);
+        }
+        {
+            let cache = self.search_cache.borrow();
+            if cache.valid && cache.version == self.version && cache.query == query {
+                return Rc::clone(&cache.matches);
+            }
         }
         let source = self.buffer.rope().to_string();
         let haystack = source.as_bytes();
@@ -154,7 +170,15 @@ impl App {
                 i += 1;
             }
         }
-        out
+        let matches: Rc<[usize]> = Rc::from(out);
+        let mut cache = self.search_cache.borrow_mut();
+        cache.version = self.version;
+        cache.query.clear();
+        cache.query.push_str(query);
+        cache.matches = Rc::clone(&matches);
+        cache.valid = true;
+        cache.scans += 1;
+        matches
     }
 
     /// Jump to the first match at or after where the search started (used
@@ -246,7 +270,7 @@ impl App {
         let source = self.buffer.rope().to_string();
         let mut out = String::with_capacity(source.len());
         let mut prev = 0;
-        for &m in &matches {
+        for &m in matches.iter() {
             out.push_str(&source[prev..m]);
             out.push_str(replacement);
             prev = m + query.len();

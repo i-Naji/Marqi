@@ -6,6 +6,7 @@
 //! quits, and `^L` cycles presets. The app owns the buffer, cursor, a cached
 //! display [`Layout`], and a viewport that scrolls to follow the cursor.
 
+use std::cell::RefCell;
 use std::collections::HashMap;
 use std::time::{Duration, Instant};
 
@@ -178,6 +179,7 @@ pub struct App {
     /// Where the current find session started; incremental typing re-searches
     /// from here instead of walking away down the file.
     find_origin: usize,
+    search_cache: RefCell<search::SearchCache>,
 
     /// Save automatically after an idle pause (config `editor.auto_save`).
     auto_save: bool,
@@ -268,6 +270,7 @@ impl App {
             clipboard: Clipboard::new(),
             last_search: String::new(),
             find_origin: 0,
+            search_cache: RefCell::new(search::SearchCache::default()),
             auto_save: false,
             last_edit: None,
             auto_save_retry_at: None,

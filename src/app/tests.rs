@@ -1130,11 +1130,23 @@ fn find_uses_smart_case() {
     type_str(&mut a, "Alpha"); // has uppercase: exact match only
     assert_eq!(a.selection_range(), Some((6, 11)));
     assert_eq!(
-        a.search_matches("alpha"),
-        vec![0, 6],
+        &*a.search_matches("alpha"),
+        &[0, 6],
         "lowercase matches both"
     );
-    assert_eq!(a.search_matches("Alpha"), vec![6]);
+    assert_eq!(&*a.search_matches("Alpha"), &[6]);
+}
+
+#[test]
+fn find_reuses_cached_matches_until_the_document_changes() {
+    let mut a = app_with("alpha beta alpha");
+    assert_eq!(&*a.search_matches("alpha"), &[0, 11]);
+    assert_eq!(&*a.search_matches("alpha"), &[0, 11]);
+    assert_eq!(a.search_cache.borrow().scans, 1);
+
+    type_str(&mut a, "alpha ");
+    assert_eq!(&*a.search_matches("alpha"), &[0, 6, 17]);
+    assert_eq!(a.search_cache.borrow().scans, 2);
 }
 
 #[test]
