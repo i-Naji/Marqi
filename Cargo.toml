@@ -29,6 +29,7 @@ directories = "6.0.0"
 # (CJK/emoji) when overdrawn by same-styled blanks — the settings popup relies
 # on this (see `ui::tests::menu_repaints_trailing_cells_of_wide_chars`).
 ratatui = "0.30.2"
+regex = "1.12.3"
 ropey = "1.6.1"
 serde = { version = "1.0.228", features = ["derive"] }
 syntect = { version = "5.3.0", default-features = false, features = ["default-fancy"] }

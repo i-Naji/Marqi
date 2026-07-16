@@ -1129,24 +1129,96 @@ fn find_uses_smart_case() {
     press_mod(&mut a, KeyCode::Char('f'), KeyModifiers::CONTROL);
     type_str(&mut a, "Alpha"); // has uppercase: exact match only
     assert_eq!(a.selection_range(), Some((6, 11)));
-    assert_eq!(
-        &*a.search_matches("alpha"),
-        &[0, 6],
-        "lowercase matches both"
-    );
-    assert_eq!(&*a.search_matches("Alpha"), &[6]);
+    let starts = |query| {
+        a.search_matches(query)
+            .iter()
+            .map(|found| found.start)
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(starts("alpha"), [0, 6], "lowercase matches both");
+    assert_eq!(starts("Alpha"), [6]);
 }
 
 #[test]
 fn find_reuses_cached_matches_until_the_document_changes() {
     let mut a = app_with("alpha beta alpha");
-    assert_eq!(&*a.search_matches("alpha"), &[0, 11]);
-    assert_eq!(&*a.search_matches("alpha"), &[0, 11]);
+    let starts = |app: &App| {
+        app.search_matches("alpha")
+            .iter()
+            .map(|found| found.start)
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(starts(&a), [0, 11]);
+    assert_eq!(starts(&a), [0, 11]);
     assert_eq!(a.search_cache.borrow().scans, 1);
 
     type_str(&mut a, "alpha ");
-    assert_eq!(&*a.search_matches("alpha"), &[0, 6, 17]);
+    assert_eq!(starts(&a), [0, 6, 17]);
     assert_eq!(a.search_cache.borrow().scans, 2);
+}
+
+#[test]
+fn find_handles_unicode_case_and_restores_on_cancel() {
+    let mut a = app_with("start Äpfel äpfel");
+    a.cursor.byte = 3;
+    press_mod(&mut a, KeyCode::Char('f'), KeyModifiers::CONTROL);
+    type_str(&mut a, "äpfel");
+    let starts: Vec<_> = a
+        .search_matches("äpfel")
+        .iter()
+        .map(|found| found.start)
+        .collect();
+    assert_eq!(starts, [6, 13]);
+    press(&mut a, KeyCode::Esc);
+    assert_eq!(a.cursor.byte, 3);
+    assert_eq!(a.selection_range(), None);
+}
+
+#[test]
+fn find_options_limit_matches() {
+    let mut a = app_with("cat scatter Cat");
+    press_mod(&mut a, KeyCode::Char('f'), KeyModifiers::CONTROL);
+    press_mod(&mut a, KeyCode::Char('w'), KeyModifiers::ALT);
+    type_str(&mut a, "cat");
+    let starts: Vec<_> = a
+        .search_matches("cat")
+        .iter()
+        .map(|found| found.start)
+        .collect();
+    assert_eq!(starts, [0, 12]);
+
+    press_mod(&mut a, KeyCode::Char('c'), KeyModifiers::ALT);
+    let starts: Vec<_> = a
+        .search_matches("cat")
+        .iter()
+        .map(|found| found.start)
+        .collect();
+    assert_eq!(starts, [0]);
+}
+
+#[test]
+fn regex_replace_uses_each_match_range() {
+    let mut a = app_with("a1 a22");
+    press_mod(&mut a, KeyCode::Char('f'), KeyModifiers::CONTROL);
+    press_mod(&mut a, KeyCode::Char('r'), KeyModifiers::ALT);
+    type_str(&mut a, r"a\d+");
+    press(&mut a, KeyCode::Tab);
+    type_str(&mut a, "X");
+    press_mod(&mut a, KeyCode::Char('a'), KeyModifiers::CONTROL);
+    assert_eq!(a.buffer.rope().to_string(), "X X");
+}
+
+#[test]
+fn find_can_stay_inside_the_original_selection() {
+    let mut a = app_with("cat cat");
+    a.selection_anchor = Some(0);
+    a.cursor.byte = 3;
+    press_mod(&mut a, KeyCode::Char('f'), KeyModifiers::CONTROL);
+    press_mod(&mut a, KeyCode::Char('s'), KeyModifiers::ALT);
+    let matches = a.search_matches("cat");
+    assert_eq!(matches.len(), 1);
+    assert_eq!(matches[0].start, 0);
+    assert_eq!(matches[0].end, 3);
 }
 
 #[test]
@@ -1195,13 +1267,17 @@ fn vim_slash_and_n_navigate_matches() {
     type_str(&mut a, "one");
     press(&mut a, KeyCode::Enter);
     press(&mut a, KeyCode::Esc);
+    assert_eq!(a.cursor.byte, 0, "closing find restores its starting point");
     press(&mut a, KeyCode::Char('n'));
-    assert_eq!(a.cursor.byte, 0, "n wraps to the first match, no selection");
+    assert_eq!(
+        a.cursor.byte, 8,
+        "n moves to the next match without selecting"
+    );
     assert_eq!(a.selection_range(), None);
     press(&mut a, KeyCode::Char('n'));
-    assert_eq!(a.cursor.byte, 8);
-    press(&mut a, KeyCode::Char('N'));
     assert_eq!(a.cursor.byte, 0);
+    press(&mut a, KeyCode::Char('N'));
+    assert_eq!(a.cursor.byte, 8);
 }
 
 #[test]

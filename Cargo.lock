@@ -1054,6 +1054,7 @@ dependencies = [
  "crossterm",
  "directories",
  "ratatui",
+ "regex",
  "ropey",
  "serde",
  "syntect",

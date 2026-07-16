@@ -6,18 +6,43 @@
 //! replaces the current match and `^A` replaces every match as one undo step.
 //! The current match is shown as a selection, so it is visible in any view.
 //!
-//! Matching is plain-text with smart case: an all-lowercase query matches
-//! case-insensitively (ASCII), any uppercase makes it exact.
+//! Matching defaults to Unicode smart case. Case-sensitive, whole-word, regex,
+//! and selection-only searches can be toggled while the prompt is open.
 
 use super::App;
 use super::prompt::Prompt;
+use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+use regex::RegexBuilder;
 use std::rc::Rc;
+
+#[derive(Clone, Copy, Default, PartialEq, Eq)]
+pub(super) struct SearchOptions {
+    pub case_sensitive: bool,
+    pub whole_word: bool,
+    pub regex: bool,
+    pub selection_only: bool,
+}
+
+#[derive(Clone, Copy)]
+pub(super) struct FindRestore {
+    pub cursor: usize,
+    pub selection_anchor: Option<usize>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) struct SearchMatch {
+    pub start: usize,
+    pub end: usize,
+}
 
 #[derive(Default)]
 pub(super) struct SearchCache {
     version: u64,
     query: String,
-    matches: Rc<[usize]>,
+    options: SearchOptions,
+    scope: Option<(usize, usize)>,
+    matches: Rc<[SearchMatch]>,
+    error: Option<String>,
     valid: bool,
     pub(super) scans: usize,
 }
@@ -26,31 +51,36 @@ impl App {
     /// Open the find prompt, seeded with the current selection (if it is a
     /// reasonable query) or the previous search.
     pub(super) fn open_find(&mut self) {
+        let original_selection = self.selection_range();
         let seed = self
             .selection_range()
             .map(|(s, e)| self.buffer.slice(s, e))
             .filter(|t| !t.is_empty() && !t.contains('\n') && t.len() <= 200)
             .unwrap_or_else(|| self.last_search.clone());
-        self.find_origin = self
-            .selection_range()
+        self.find_origin = original_selection
             .map(|(s, _)| s)
             .unwrap_or(self.cursor.byte);
+        self.find_restore = Some(FindRestore {
+            cursor: self.cursor.byte,
+            selection_anchor: self.selection_anchor,
+        });
+        self.find_scope = original_selection;
+        self.search_options.selection_only = false;
         self.prompt = Some(Prompt::Find {
             cursor: seed.len(),
             input: seed,
         });
     }
 
-    pub(super) fn find_key(
-        &mut self,
-        key: crossterm::event::KeyEvent,
-        mut input: String,
-        mut cursor: usize,
-    ) {
-        use crossterm::event::KeyCode;
+    pub(super) fn find_key(&mut self, key: KeyEvent, mut input: String, mut cursor: usize) {
+        if self.toggle_search_option(key, &input) {
+            self.prompt = Some(Prompt::Find { input, cursor });
+            return;
+        }
         match key.code {
             KeyCode::Esc => {
                 self.last_search = input;
+                self.cancel_find();
                 return;
             }
             KeyCode::Enter | KeyCode::Down => {
@@ -83,16 +113,24 @@ impl App {
 
     pub(super) fn replace_key(
         &mut self,
-        key: crossterm::event::KeyEvent,
+        key: KeyEvent,
         query: String,
         mut input: String,
         mut cursor: usize,
     ) {
-        use crossterm::event::KeyCode;
         let ctrl = super::ctrl_like(key.modifiers);
+        if self.toggle_search_option(key, &query) {
+            self.prompt = Some(Prompt::Replace {
+                query,
+                input,
+                cursor,
+            });
+            return;
+        }
         match key.code {
             KeyCode::Esc => {
                 self.last_search = query;
+                self.cancel_find();
                 return;
             }
             KeyCode::Tab => {
@@ -111,6 +149,7 @@ impl App {
                     n => format!("Replaced {n} occurrences"),
                 });
                 self.last_search = query;
+                self.finish_find();
                 return;
             }
             KeyCode::Enter => self.replace_current(&query, &input),
@@ -137,63 +176,89 @@ impl App {
         self.find_step(&query, forward, false);
     }
 
-    /// Every match start, in order. Smart case: an all-lowercase query
-    /// matches ASCII case-insensitively. Byte-wise comparison is boundary-safe
-    /// because non-ASCII bytes only match exactly.
-    pub(super) fn search_matches(&self, query: &str) -> Rc<[usize]> {
+    pub(super) fn search_matches(&self, query: &str) -> Rc<[SearchMatch]> {
         if query.is_empty() {
             return Rc::from([]);
         }
+        let scope = self
+            .search_options
+            .selection_only
+            .then_some(self.find_scope)
+            .flatten();
         {
             let cache = self.search_cache.borrow();
-            if cache.valid && cache.version == self.version && cache.query == query {
+            if cache.valid
+                && cache.version == self.version
+                && cache.query == query
+                && cache.options == self.search_options
+                && cache.scope == scope
+            {
                 return Rc::clone(&cache.matches);
             }
         }
         let source = self.buffer.rope().to_string();
-        let haystack = source.as_bytes();
-        let needle = query.as_bytes();
-        let exact = query.chars().any(|c| c.is_uppercase());
-        let mut out = Vec::new();
-        let mut i = 0;
-        while i + needle.len() <= haystack.len() {
-            let window = &haystack[i..i + needle.len()];
-            let hit = if exact {
-                window == needle
-            } else {
-                window.eq_ignore_ascii_case(needle)
-            };
-            if hit {
-                out.push(i);
-                i += needle.len();
-            } else {
-                i += 1;
+        let pattern = if self.search_options.regex {
+            query.to_string()
+        } else {
+            regex::escape(query)
+        };
+        let exact = self.search_options.case_sensitive || query.chars().any(char::is_uppercase);
+        let compiled = RegexBuilder::new(&pattern)
+            .case_insensitive(!exact)
+            .unicode(true)
+            .build();
+        let (matches, error) = match compiled {
+            Ok(regex) => {
+                let matches = regex
+                    .find_iter(&source)
+                    .filter(|found| found.start() < found.end())
+                    .filter(|found| {
+                        scope
+                            .is_none_or(|(start, end)| found.start() >= start && found.end() <= end)
+                    })
+                    .filter(|found| {
+                        !self.search_options.whole_word
+                            || whole_word_match(&source, found.start(), found.end())
+                    })
+                    .map(|found| SearchMatch {
+                        start: found.start(),
+                        end: found.end(),
+                    })
+                    .collect::<Vec<_>>();
+                (Rc::from(matches), None)
             }
-        }
-        let matches: Rc<[usize]> = Rc::from(out);
+            Err(error) => (Rc::from([]), Some(error.to_string())),
+        };
         let mut cache = self.search_cache.borrow_mut();
         cache.version = self.version;
         cache.query.clear();
         cache.query.push_str(query);
+        cache.options = self.search_options;
+        cache.scope = scope;
         cache.matches = Rc::clone(&matches);
+        cache.error = error;
         cache.valid = true;
         cache.scans += 1;
         matches
+    }
+
+    pub(super) fn search_error(&self) -> Option<String> {
+        self.search_cache.borrow().error.clone()
     }
 
     /// Jump to the first match at or after where the search started (used
     /// while typing the query). Wraps to the first match in the document.
     fn find_from_origin(&mut self, query: &str) {
         let matches = self.search_matches(query);
-        let Some(&start) = matches
+        let Some(found) = matches
             .iter()
-            .find(|&&s| s >= self.find_origin)
+            .find(|found| found.start >= self.find_origin)
             .or_else(|| matches.first())
         else {
             self.selection_anchor = None;
             return;
         };
-        self.jump_to_match(start, query.len(), true);
+        self.jump_to_match(*found, true);
     }
 
     /// Step to the next/previous match from the current position, wrapping.
@@ -209,32 +274,38 @@ impl App {
             .unwrap_or(self.cursor.byte);
         // When sitting on a match, step off it; otherwise a match exactly at
         // the cursor is the natural first hit.
-        let on_match = matches.contains(&from);
+        let on_match = matches.iter().any(|found| found.start == from);
         let next = if forward {
             matches
                 .iter()
-                .find(|&&s| if on_match { s > from } else { s >= from })
+                .find(|found| {
+                    if on_match {
+                        found.start > from
+                    } else {
+                        found.start >= from
+                    }
+                })
                 .or_else(|| matches.first())
         } else {
             matches
                 .iter()
                 .rev()
-                .find(|&&s| s < from)
+                .find(|found| found.start < from)
                 .or_else(|| matches.last())
         };
-        if let Some(&start) = next {
-            self.jump_to_match(start, query.len(), select);
+        if let Some(found) = next {
+            self.jump_to_match(*found, select);
         }
     }
 
-    fn jump_to_match(&mut self, start: usize, len: usize, select: bool) {
+    fn jump_to_match(&mut self, found: SearchMatch, select: bool) {
         self.history.break_run();
         if select {
-            self.selection_anchor = Some(start);
-            self.cursor.byte = (start + len).min(self.buffer.len_bytes());
+            self.selection_anchor = Some(found.start);
+            self.cursor.byte = found.end.min(self.buffer.len_bytes());
         } else {
             self.selection_anchor = None;
-            self.cursor.byte = start.min(self.buffer.len_bytes());
+            self.cursor.byte = found.start.min(self.buffer.len_bytes());
         }
         self.ensure_layout();
         self.cursor.sync_goal(&self.layout);
@@ -244,15 +315,17 @@ impl App {
     /// Replace the currently selected match and step to the next one; with no
     /// match selected, just find the first.
     fn replace_current(&mut self, query: &str, replacement: &str) {
-        let selected = self.selection_range().filter(|(s, _)| {
-            self.search_matches(query).contains(s)
-                // Guard against a stale selection of a different length.
-                && self.selection_range().is_some_and(|(a, b)| b - a == query.len())
+        let selection = self.selection_range();
+        let selected = selection.and_then(|(start, end)| {
+            self.search_matches(query)
+                .iter()
+                .find(|found| found.start == start && found.end == end)
+                .copied()
         });
         match selected {
-            Some((s, e)) => {
+            Some(found) => {
                 self.history.break_run();
-                self.replace_range(s, e, replacement);
+                self.replace_range(found.start, found.end, replacement);
                 self.history.break_run();
                 self.find_step(query, true, true);
             }
@@ -270,30 +343,92 @@ impl App {
         let source = self.buffer.rope().to_string();
         let mut out = String::with_capacity(source.len());
         let mut prev = 0;
-        for &m in matches.iter() {
-            out.push_str(&source[prev..m]);
+        for found in matches.iter() {
+            out.push_str(&source[prev..found.start]);
             out.push_str(replacement);
-            prev = m + query.len();
+            prev = found.end;
         }
         out.push_str(&source[prev..]);
 
         let old_cursor = self.cursor.byte;
-        let delta = replacement.len() as isize - query.len() as isize;
-        let before = matches
-            .iter()
-            .take_while(|&&m| m + query.len() <= old_cursor)
-            .count();
-        let mut new_cursor = old_cursor.saturating_add_signed(before as isize * delta);
-        if let Some(&m) = matches.get(before)
-            && m < old_cursor
-        {
-            // The cursor sat inside a match; land just after its replacement.
-            new_cursor = m.saturating_add_signed(before as isize * delta) + replacement.len();
-        }
+        let new_cursor = cursor_after_replacements(old_cursor, &matches, replacement.len());
 
         self.history.break_run();
         self.replace_range_with_cursor(0, self.buffer.len_bytes(), &out, Some(new_cursor));
         self.history.break_run();
         matches.len()
     }
+
+    fn toggle_search_option(&mut self, key: KeyEvent, query: &str) -> bool {
+        if !key.modifiers.contains(KeyModifiers::ALT) {
+            return false;
+        }
+        match key.code {
+            KeyCode::Char('c' | 'C') => {
+                self.search_options.case_sensitive = !self.search_options.case_sensitive
+            }
+            KeyCode::Char('w' | 'W') => {
+                self.search_options.whole_word = !self.search_options.whole_word
+            }
+            KeyCode::Char('r' | 'R') => self.search_options.regex = !self.search_options.regex,
+            KeyCode::Char('s' | 'S') => {
+                self.search_options.selection_only =
+                    self.find_scope.is_some() && !self.search_options.selection_only
+            }
+            _ => return false,
+        }
+        self.find_from_origin(query);
+        true
+    }
+
+    fn cancel_find(&mut self) {
+        if let Some(restore) = self.find_restore.take() {
+            self.cursor.byte = restore.cursor.min(self.buffer.len_bytes());
+            self.selection_anchor = restore
+                .selection_anchor
+                .map(|anchor| anchor.min(self.buffer.len_bytes()));
+            self.ensure_layout();
+            self.cursor.sync_goal(&self.layout);
+            self.follow_cursor = true;
+        }
+        self.find_scope = None;
+        self.search_options.selection_only = false;
+    }
+
+    fn finish_find(&mut self) {
+        self.find_restore = None;
+        self.find_scope = None;
+        self.search_options.selection_only = false;
+    }
+}
+
+fn whole_word_match(source: &str, start: usize, end: usize) -> bool {
+    let before = source[..start].chars().next_back();
+    let after = source[end..].chars().next();
+    before.is_none_or(|ch| !is_word_char(ch)) && after.is_none_or(|ch| !is_word_char(ch))
+}
+
+fn is_word_char(ch: char) -> bool {
+    ch.is_alphanumeric() || ch == '_'
+}
+
+fn cursor_after_replacements(
+    cursor: usize,
+    matches: &[SearchMatch],
+    replacement_len: usize,
+) -> usize {
+    let mut delta = 0isize;
+    for found in matches {
+        if cursor < found.start {
+            break;
+        }
+        if cursor < found.end {
+            return found
+                .start
+                .saturating_add_signed(delta)
+                .saturating_add(replacement_len);
+        }
+        delta += replacement_len as isize - (found.end - found.start) as isize;
+    }
+    cursor.saturating_add_signed(delta)
 }

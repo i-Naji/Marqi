@@ -143,14 +143,23 @@ impl App {
                     let matches = self.search_matches(input);
                     let current = self
                         .selection_range()
-                        .and_then(|(s, _)| matches.iter().position(|&m| m == s));
-                    text.push_str(&match (current, matches.len()) {
-                        (_, 0) => "   no matches".to_string(),
-                        (Some(i), n) => format!("   {}/{n}", i + 1),
-                        (None, n) => format!("   {n} matches"),
+                        .and_then(|(s, _)| matches.iter().position(|found| found.start == s));
+                    text.push_str(&match (self.search_error(), current, matches.len()) {
+                        (Some(error), _, _) => format!("   invalid regex: {error}"),
+                        (None, _, 0) => "   no matches".to_string(),
+                        (None, Some(i), n) => format!("   {}/{n}", i + 1),
+                        (None, None, n) => format!("   {n} matches"),
                     });
                 }
                 text.push_str("   (Enter/\u{2193} next · \u{2191} prev · Tab replace · Esc close)");
+                let options = self.search_options;
+                text.push_str(&format!(
+                    "   Alt+C case:{} · Alt+W word:{} · Alt+R regex:{} · Alt+S scope:{}",
+                    on_off(options.case_sensitive),
+                    on_off(options.whole_word),
+                    on_off(options.regex),
+                    on_off(options.selection_only),
+                ));
                 let col =
                     UnicodeWidthStr::width(FIND_LABEL) + UnicodeWidthStr::width(&input[..*cursor]);
                 Some(PromptView {
@@ -350,6 +359,10 @@ impl App {
             error: Some(message),
         });
     }
+}
+
+fn on_off(value: bool) -> &'static str {
+    if value { "on" } else { "off" }
 }
 
 /// Shared single-line text editing for prompts (cursor motion, deletion, and

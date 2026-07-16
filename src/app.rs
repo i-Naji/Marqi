@@ -180,6 +180,9 @@ pub struct App {
     /// from here instead of walking away down the file.
     find_origin: usize,
     search_cache: RefCell<search::SearchCache>,
+    search_options: search::SearchOptions,
+    find_restore: Option<search::FindRestore>,
+    find_scope: Option<(usize, usize)>,
 
     /// Save automatically after an idle pause (config `editor.auto_save`).
     auto_save: bool,
@@ -271,6 +274,9 @@ impl App {
             last_search: String::new(),
             find_origin: 0,
             search_cache: RefCell::new(search::SearchCache::default()),
+            search_options: search::SearchOptions::default(),
+            find_restore: None,
+            find_scope: None,
             auto_save: false,
             last_edit: None,
             auto_save_retry_at: None,
