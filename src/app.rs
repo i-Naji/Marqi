@@ -23,11 +23,14 @@ use crate::markdown::{CodeHighlighter, MarkdownTheme, ThemeName, ThemeVariant};
 use crate::text::{next_grapheme, prev_grapheme};
 use crate::view::{self, HybridView, PreviewView, ViewCache};
 
+mod action;
 mod menu;
 mod prompt;
 mod search;
 mod smart_edit;
 mod table;
+
+pub use action::Action;
 
 #[cfg(test)]
 mod tests;
@@ -568,7 +571,7 @@ impl App {
             && !(self.preset == Preset::Vim && self.mode == Mode::Normal)
         {
             self.pending = None;
-            self.toggle_raw_view();
+            self.run_action(Action::ToggleRaw);
             return;
         }
 
@@ -578,7 +581,7 @@ impl App {
         }
         if ctrl && key.code == KeyCode::Char('t') {
             self.pending = None;
-            self.toggle_table_mode();
+            self.run_action(Action::ToggleTable);
             return;
         }
         if self.table_mode && self.handle_table_key(key, ctrl) {
@@ -594,18 +597,19 @@ impl App {
 
     /// Dispatch a global Ctrl shortcut. Returns whether the key was handled.
     fn handle_global_ctrl(&mut self, key: KeyEvent) -> bool {
-        match key.code {
-            KeyCode::Char('q') => self.request_quit(),
+        let action = match key.code {
+            KeyCode::Char('q') => Action::Quit,
             KeyCode::Char('s' | 'S') if key.modifiers.contains(KeyModifiers::SHIFT) => {
-                self.open_save_as_current()
+                Action::SaveAs
             }
-            KeyCode::Char('s') => self.save(),
-            KeyCode::Char('g') => self.open_menu(),
-            KeyCode::Char('p') => self.toggle_preview(),
-            KeyCode::Char('l') => self.cycle_preset(),
-            KeyCode::Char('b') => self.toggle_cursor_shape(),
+            KeyCode::Char('s') => Action::Save,
+            KeyCode::Char('g') => Action::Settings,
+            KeyCode::Char('p') => Action::TogglePreview,
+            KeyCode::Char('l') => Action::CyclePreset,
+            KeyCode::Char('b') => Action::ToggleCursor,
             _ => return false,
-        }
+        };
+        self.run_action(action);
         true
     }
 
@@ -768,20 +772,35 @@ impl App {
         let shift = key.modifiers.contains(KeyModifiers::SHIFT);
 
         if ctrl {
-            match key.code {
-                KeyCode::Char('a') => self.select_all(),
-                KeyCode::Char('c') => self.copy(),
-                KeyCode::Char('x') => self.cut(),
-                KeyCode::Char('v') => self.paste(),
-                KeyCode::Char('z') if shift => self.redo(),
-                KeyCode::Char('z') => self.undo(),
-                KeyCode::Char('y') => self.redo(),
-                KeyCode::Char('f') => self.open_find(),
-                KeyCode::Left => self.do_motion(Motion::WordBack, shift),
-                KeyCode::Right => self.do_motion(Motion::WordForward, shift),
-                KeyCode::Home => self.do_motion(Motion::DocStart, shift),
-                KeyCode::End => self.do_motion(Motion::DocEnd, shift),
-                _ => {}
+            let action = match key.code {
+                KeyCode::Char('a') => Some(Action::SelectAll),
+                KeyCode::Char('c') => Some(Action::Copy),
+                KeyCode::Char('x') => Some(Action::Cut),
+                KeyCode::Char('v') => Some(Action::Paste),
+                KeyCode::Char('z') if shift => Some(Action::Redo),
+                KeyCode::Char('z') => Some(Action::Undo),
+                KeyCode::Char('y') => Some(Action::Redo),
+                KeyCode::Char('f') => Some(Action::Find),
+                KeyCode::Left => {
+                    self.do_motion(Motion::WordBack, shift);
+                    None
+                }
+                KeyCode::Right => {
+                    self.do_motion(Motion::WordForward, shift);
+                    None
+                }
+                KeyCode::Home => {
+                    self.do_motion(Motion::DocStart, shift);
+                    None
+                }
+                KeyCode::End => {
+                    self.do_motion(Motion::DocEnd, shift);
+                    None
+                }
+                _ => None,
+            };
+            if let Some(action) = action {
+                self.run_action(action);
             }
             return;
         }
@@ -864,10 +883,10 @@ impl App {
             KeyCode::Char('O') => self.open_line(false),
             KeyCode::Char('x') => self.delete_forward(),
             KeyCode::Char('v') => self.enter_visual(),
-            KeyCode::Char('u') => self.undo(),
-            KeyCode::Char('r') if ctrl => self.redo(),
-            KeyCode::Char('p') | KeyCode::Char('P') => self.paste(),
-            KeyCode::Char('/') => self.open_find(),
+            KeyCode::Char('u') => self.run_action(Action::Undo),
+            KeyCode::Char('r') if ctrl => self.run_action(Action::Redo),
+            KeyCode::Char('p') | KeyCode::Char('P') => self.run_action(Action::Paste),
+            KeyCode::Char('/') => self.run_action(Action::Find),
             KeyCode::Char('n') => self.find_next(true),
             KeyCode::Char('N') => self.find_next(false),
             _ => self.motion_key(key, false),
@@ -968,7 +987,7 @@ impl App {
             // `C-x C-s` (save) never reaches here: the global ^S handler runs
             // first, saving and clearing the pending leader.
             if ctrl && key.code == KeyCode::Char('c') {
-                self.request_quit();
+                self.run_action(Action::Quit);
             }
             return;
         }
@@ -976,14 +995,14 @@ impl App {
         if ctrl {
             match (self.preset, key.code) {
                 // Universal-ish editing shortcuts.
-                (_, KeyCode::Char('z')) => self.undo(),
+                (_, KeyCode::Char('z')) => self.run_action(Action::Undo),
                 // ^F find, plus ^W — nano's native "Where Is" (Emacs keeps
                 // C-f as forward-char and gets find on M-s).
-                (Preset::Nano, KeyCode::Char('f')) => self.open_find(),
-                (Preset::Nano, KeyCode::Char('w')) => self.open_find(),
-                (Preset::Nano, KeyCode::Char('k')) => self.cut(),
-                (Preset::Nano, KeyCode::Char('u')) => self.paste(),
-                (Preset::Nano, KeyCode::Char('o')) => self.save(),
+                (Preset::Nano, KeyCode::Char('f')) => self.run_action(Action::Find),
+                (Preset::Nano, KeyCode::Char('w')) => self.run_action(Action::Find),
+                (Preset::Nano, KeyCode::Char('k')) => self.run_action(Action::Cut),
+                (Preset::Nano, KeyCode::Char('u')) => self.run_action(Action::Paste),
+                (Preset::Nano, KeyCode::Char('o')) => self.run_action(Action::Save),
                 (Preset::Emacs, KeyCode::Char('x')) => self.pending = Some('x'),
                 (Preset::Emacs, KeyCode::Char('a')) => self.do_motion(Motion::LineStart, mark),
                 (Preset::Emacs, KeyCode::Char('e')) => self.do_motion(Motion::LineEnd, mark),
@@ -992,8 +1011,8 @@ impl App {
                 // they never arrive here — backward-char and previous-line are
                 // available on the arrow keys.
                 (Preset::Emacs, KeyCode::Char('n')) => self.do_motion(Motion::Down, mark),
-                (Preset::Emacs, KeyCode::Char('w')) => self.cut(),
-                (Preset::Emacs, KeyCode::Char('y')) => self.paste(),
+                (Preset::Emacs, KeyCode::Char('w')) => self.run_action(Action::Cut),
+                (Preset::Emacs, KeyCode::Char('y')) => self.run_action(Action::Paste),
                 (Preset::Emacs, KeyCode::Char(' ')) => {
                     self.selection_anchor = Some(self.cursor.byte);
                     self.status = Some("Mark set".to_string());
@@ -1006,7 +1025,7 @@ impl App {
         if alt && self.preset == Preset::Emacs {
             match key.code {
                 KeyCode::Char('w') => {
-                    self.copy();
+                    self.run_action(Action::Copy);
                     // Emacs deactivates the region after a kill-ring save.
                     self.selection_anchor = None;
                     return;
@@ -1014,7 +1033,7 @@ impl App {
                 KeyCode::Char('f') => return self.do_motion(Motion::WordForward, mark),
                 KeyCode::Char('b') => return self.do_motion(Motion::WordBack, mark),
                 // Emacs' search prefix; C-s itself is the global save.
-                KeyCode::Char('s') => return self.open_find(),
+                KeyCode::Char('s') => return self.run_action(Action::Find),
                 _ => {}
             }
         }

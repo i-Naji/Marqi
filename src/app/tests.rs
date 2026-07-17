@@ -14,6 +14,15 @@ fn app_with(src: &str) -> App {
     a
 }
 
+#[test]
+fn actions_share_editor_behavior() {
+    let mut a = app_with("text");
+    a.run_action(Action::ToggleRaw);
+    assert!(a.raw_view());
+    a.run_action(Action::SelectAll);
+    assert_eq!(a.selection_range(), Some((0, 4)));
+}
+
 fn press(app: &mut App, code: KeyCode) {
     press_mod(app, code, KeyModifiers::NONE);
 }
