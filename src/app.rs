@@ -25,6 +25,7 @@ use crate::view::{self, HybridView, PreviewView, ViewCache};
 
 mod action;
 mod menu;
+mod palette;
 mod prompt;
 mod search;
 mod smart_edit;
@@ -161,6 +162,7 @@ pub struct App {
     /// The interactive settings popup (theme / appearance / keybindings), when
     /// open. Captures all input while active, like [`prompt`].
     menu: Option<menu::Menu>,
+    palette: Option<palette::Palette>,
     cursor_shape: CursorShape,
     table_mode: bool,
     /// Show every line as highlighted source (no markers stripped).
@@ -264,6 +266,7 @@ impl App {
             status: None,
             mode: Mode::Insert,
             menu: None,
+            palette: None,
             cursor_shape: CursorShape::Block,
             table_mode: false,
             raw_view: false,
@@ -535,6 +538,11 @@ impl App {
             return;
         }
 
+        if self.palette.is_some() {
+            self.handle_palette_key(key);
+            return;
+        }
+
         // The settings popup is modal: it owns all input until accepted (Enter
         // / ^G) or cancelled (Esc), exactly like a prompt.
         if self.menu.is_some() {
@@ -604,6 +612,9 @@ impl App {
             }
             KeyCode::Char('s') => Action::Save,
             KeyCode::Char('g') => Action::Settings,
+            KeyCode::Char('p' | 'P') if key.modifiers.contains(KeyModifiers::SHIFT) => {
+                Action::CommandPalette
+            }
             KeyCode::Char('p') => Action::TogglePreview,
             KeyCode::Char('l') => Action::CyclePreset,
             KeyCode::Char('b') => Action::ToggleCursor,
@@ -1064,6 +1075,9 @@ impl App {
     /// Wheel scrolling moves the viewport freely; the cursor stays put and the
     /// view stops following it until the next keypress or click.
     fn scroll_wheel(&mut self, delta: isize) {
+        if self.palette.is_some() {
+            return;
+        }
         if let Some(menu) = self.menu.as_mut() {
             menu.guide_scroll = menu.guide_scroll.saturating_add_signed(delta);
             return;
@@ -1122,7 +1136,11 @@ impl App {
     /// clicked column within their source line, which is close enough since
     /// the click immediately opens that line as raw.
     fn byte_at_screen(&mut self, x: u16, y: u16) -> Option<usize> {
-        if self.menu.is_some() || self.mode.is_read() || y as usize >= self.viewport_height {
+        if self.menu.is_some()
+            || self.palette.is_some()
+            || self.mode.is_read()
+            || y as usize >= self.viewport_height
+        {
             return None;
         }
         self.ensure_layout();

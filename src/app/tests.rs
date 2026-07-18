@@ -23,6 +23,36 @@ fn actions_share_editor_behavior() {
     assert_eq!(a.selection_range(), Some((0, 4)));
 }
 
+#[test]
+fn command_palette_filters_and_runs_actions() {
+    let mut a = app_with("text");
+    press_mod(
+        &mut a,
+        KeyCode::Char('p'),
+        KeyModifiers::CONTROL | KeyModifiers::SHIFT,
+    );
+    assert!(a.palette_open());
+    type_str(&mut a, "raw");
+    let items = a.palette_items();
+    assert_eq!(items.first().unwrap().action, Action::ToggleRaw);
+    press(&mut a, KeyCode::Enter);
+    assert!(a.raw_view());
+    assert!(!a.palette_open());
+}
+
+#[test]
+fn command_palette_keeps_disabled_actions_open() {
+    let mut a = app_with("text");
+    a.run_action(Action::TogglePreview);
+    a.run_action(Action::CommandPalette);
+    type_str(&mut a, "cut");
+    let items = a.palette_items();
+    assert_eq!(items.first().unwrap().action, Action::Cut);
+    assert!(!items.first().unwrap().enabled);
+    press(&mut a, KeyCode::Enter);
+    assert!(a.palette_open());
+}
+
 fn press(app: &mut App, code: KeyCode) {
     press_mod(app, code, KeyModifiers::NONE);
 }
