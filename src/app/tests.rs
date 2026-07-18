@@ -53,6 +53,46 @@ fn command_palette_keeps_disabled_actions_open() {
     assert!(a.palette_open());
 }
 
+#[test]
+fn formatting_actions_wrap_selection_as_one_undo_step() {
+    let mut a = app_with("word");
+    a.selection_anchor = Some(0);
+    a.cursor.byte = 4;
+    a.run_action(Action::Bold);
+    assert_eq!(a.buffer.rope().to_string(), "**word**");
+    a.run_action(Action::Undo);
+    assert_eq!(a.buffer.rope().to_string(), "word");
+}
+
+#[test]
+fn formatting_actions_insert_links_and_inline_pairs() {
+    let mut a = app_with("label");
+    a.selection_anchor = Some(0);
+    a.cursor.byte = 5;
+    a.run_action(Action::Link);
+    assert_eq!(a.buffer.rope().to_string(), "[label]()");
+    assert_eq!(a.cursor.byte, 8);
+
+    a.run_action(Action::InlineCode);
+    let tick = char::from(96);
+    assert_eq!(
+        a.buffer.rope().to_string(),
+        format!("[label]({tick}{tick})")
+    );
+    assert_eq!(a.cursor.byte, 9);
+}
+
+#[test]
+fn formatting_actions_preserve_indentation_and_line_endings() {
+    let mut a = app_with("  title\r\nnext\r\n");
+    a.run_action(Action::CycleHeading);
+    assert_eq!(a.buffer.rope().to_string(), "  # title\r\nnext\r\n");
+    a.run_action(Action::ToggleQuote);
+    assert_eq!(a.buffer.rope().to_string(), "  > # title\r\nnext\r\n");
+    a.run_action(Action::ToggleBullet);
+    assert_eq!(a.buffer.rope().to_string(), "  - > # title\r\nnext\r\n");
+}
+
 fn press(app: &mut App, code: KeyCode) {
     press_mod(app, code, KeyModifiers::NONE);
 }

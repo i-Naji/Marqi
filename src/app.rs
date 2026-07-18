@@ -24,6 +24,7 @@ use crate::text::{next_grapheme, prev_grapheme};
 use crate::view::{self, HybridView, PreviewView, ViewCache};
 
 mod action;
+mod formatting;
 mod menu;
 mod palette;
 mod prompt;

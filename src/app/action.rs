@@ -19,10 +19,18 @@ pub enum Action {
     Cut,
     Paste,
     CommandPalette,
+    Bold,
+    Italic,
+    Strikethrough,
+    InlineCode,
+    Link,
+    CycleHeading,
+    ToggleQuote,
+    ToggleBullet,
 }
 
 impl Action {
-    pub const ALL: [Self; 16] = [
+    pub const ALL: [Self; 24] = [
         Self::Save,
         Self::SaveAs,
         Self::Find,
@@ -32,6 +40,14 @@ impl Action {
         Self::Copy,
         Self::Cut,
         Self::Paste,
+        Self::Bold,
+        Self::Italic,
+        Self::Strikethrough,
+        Self::InlineCode,
+        Self::Link,
+        Self::CycleHeading,
+        Self::ToggleQuote,
+        Self::ToggleBullet,
         Self::TogglePreview,
         Self::ToggleRaw,
         Self::ToggleTable,
@@ -60,6 +76,14 @@ impl Action {
             Self::Cut => "Cut",
             Self::Paste => "Paste",
             Self::CommandPalette => "Command palette",
+            Self::Bold => "Toggle bold",
+            Self::Italic => "Toggle italic",
+            Self::Strikethrough => "Toggle strikethrough",
+            Self::InlineCode => "Toggle inline code",
+            Self::Link => "Insert link",
+            Self::CycleHeading => "Cycle heading level",
+            Self::ToggleQuote => "Toggle block quote",
+            Self::ToggleBullet => "Toggle bullet list",
         }
     }
 
@@ -82,6 +106,14 @@ impl Action {
             Self::Cut => "Ctrl+X",
             Self::Paste => "Ctrl+V",
             Self::CommandPalette => "Ctrl+Shift+P",
+            Self::Bold
+            | Self::Italic
+            | Self::Strikethrough
+            | Self::InlineCode
+            | Self::Link
+            | Self::CycleHeading
+            | Self::ToggleQuote
+            | Self::ToggleBullet => "",
         }
     }
 }
@@ -96,6 +128,14 @@ impl App {
             | Action::Copy
             | Action::Cut
             | Action::Paste => !self.mode.is_read(),
+            Action::Bold
+            | Action::Italic
+            | Action::Strikethrough
+            | Action::InlineCode
+            | Action::Link
+            | Action::CycleHeading
+            | Action::ToggleQuote
+            | Action::ToggleBullet => !self.mode.is_read(),
             _ => true,
         }
     }
@@ -122,6 +162,14 @@ impl App {
             Action::Cut => self.cut(),
             Action::Paste => self.paste(),
             Action::CommandPalette => self.open_palette(),
+            Action::Bold => self.toggle_inline("**"),
+            Action::Italic => self.toggle_inline("*"),
+            Action::Strikethrough => self.toggle_inline("~~"),
+            Action::InlineCode => self.toggle_inline("\u{60}"),
+            Action::Link => self.insert_link(),
+            Action::CycleHeading => self.cycle_heading(),
+            Action::ToggleQuote => self.toggle_line_prefix("> "),
+            Action::ToggleBullet => self.toggle_line_prefix("- "),
         }
     }
 }
