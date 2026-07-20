@@ -11,6 +11,7 @@ use std::collections::HashMap;
 use std::time::{Duration, Instant};
 
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
+use unicode_width::UnicodeWidthStr;
 
 use crate::buffer::TextBuffer;
 use crate::clipboard::Clipboard;
@@ -1095,6 +1096,12 @@ impl App {
     }
 
     fn mouse_down(&mut self, x: u16, y: u16) {
+        if let Some(line) = self.task_line_at_click(x, y) {
+            self.cursor.byte = self.buffer.rope().line_to_byte(line);
+            self.run_action(Action::ToggleTask);
+            self.after_mouse_move();
+            return;
+        }
         let Some(byte) = self.byte_at_screen(x, y) else {
             return;
         };
@@ -1105,6 +1112,31 @@ impl App {
         self.mouse_press_byte = Some(byte);
         self.cursor.byte = byte;
         self.after_mouse_move();
+    }
+
+    fn task_line_at_click(&mut self, x: u16, y: u16) -> Option<usize> {
+        if self.menu.is_some()
+            || self.palette.is_some()
+            || self.mode.is_read()
+            || y as usize >= self.viewport_height
+        {
+            return None;
+        }
+        let assembled = self.visible_rows();
+        let row = assembled.lines.get(y as usize)?;
+        let text: String = row.spans.iter().map(|span| span.content.as_ref()).collect();
+        let glyph = text.find(['■', '□'])?;
+        let glyph_col = UnicodeWidthStr::width(&text[..glyph]);
+        let click_col = (x as usize).saturating_sub(self.left_offset);
+        if click_col != glyph_col {
+            return None;
+        }
+        assembled
+            .numbers
+            .get(y as usize)
+            .copied()
+            .flatten()
+            .map(|line| line - 1)
     }
 
     fn mouse_drag(&mut self, x: u16, y: u16) {

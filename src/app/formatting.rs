@@ -97,4 +97,57 @@ impl App {
         self.replace_range_with_cursor(start, end, &replacement, Some(cursor));
         self.history.break_run();
     }
+
+    pub(super) fn toggle_task(&mut self) {
+        let line = self.buffer.rope().byte_to_line(self.cursor.byte);
+        let (start, end) = self.line_range(line);
+        let source = self.buffer.slice(start, end);
+        let body_len = source.trim_end_matches(['\r', '\n']).len();
+        let body = &source[..body_len];
+        let indent_len = body
+            .bytes()
+            .take_while(|byte| matches!(byte, b' ' | b'\t'))
+            .count();
+        let marker_end = list_marker_end(&body[indent_len..]).map(|end| indent_len + end);
+        let checkbox_at = marker_end.unwrap_or(indent_len);
+        let rest = &body[checkbox_at..];
+
+        self.history.break_run();
+        if rest.len() >= 3
+            && rest.as_bytes()[0] == b'['
+            && rest.as_bytes()[2] == b']'
+            && matches!(rest.as_bytes()[1], b' ' | b'x' | b'X')
+        {
+            let checked = rest.as_bytes()[1] != b' ';
+            self.replace_range(
+                start + checkbox_at + 1,
+                start + checkbox_at + 2,
+                if checked { " " } else { "x" },
+            );
+        } else if marker_end.is_some() {
+            self.replace_range(start + checkbox_at, start + checkbox_at, "[ ] ");
+        } else {
+            self.replace_range(start + indent_len, start + indent_len, "- [ ] ");
+        }
+        self.history.break_run();
+    }
+}
+
+fn list_marker_end(line: &str) -> Option<usize> {
+    let bytes = line.as_bytes();
+    if bytes.len() >= 2 && matches!(bytes[0], b'-' | b'*' | b'+') && bytes[1].is_ascii_whitespace()
+    {
+        return Some(2);
+    }
+    let digits = bytes
+        .iter()
+        .take_while(|byte| byte.is_ascii_digit())
+        .count();
+    if digits > 0
+        && matches!(bytes.get(digits), Some(b'.' | b')'))
+        && bytes.get(digits + 1).is_some_and(u8::is_ascii_whitespace)
+    {
+        return Some(digits + 2);
+    }
+    None
 }

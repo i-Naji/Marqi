@@ -27,10 +27,11 @@ pub enum Action {
     CycleHeading,
     ToggleQuote,
     ToggleBullet,
+    ToggleTask,
 }
 
 impl Action {
-    pub const ALL: [Self; 24] = [
+    pub const ALL: [Self; 25] = [
         Self::Save,
         Self::SaveAs,
         Self::Find,
@@ -48,6 +49,7 @@ impl Action {
         Self::CycleHeading,
         Self::ToggleQuote,
         Self::ToggleBullet,
+        Self::ToggleTask,
         Self::TogglePreview,
         Self::ToggleRaw,
         Self::ToggleTable,
@@ -84,6 +86,7 @@ impl Action {
             Self::CycleHeading => "Cycle heading level",
             Self::ToggleQuote => "Toggle block quote",
             Self::ToggleBullet => "Toggle bullet list",
+            Self::ToggleTask => "Toggle task item",
         }
     }
 
@@ -114,6 +117,7 @@ impl Action {
             | Self::CycleHeading
             | Self::ToggleQuote
             | Self::ToggleBullet => "",
+            Self::ToggleTask => "",
         }
     }
 }
@@ -136,6 +140,7 @@ impl App {
             | Action::CycleHeading
             | Action::ToggleQuote
             | Action::ToggleBullet => !self.mode.is_read(),
+            Action::ToggleTask => !self.mode.is_read(),
             _ => true,
         }
     }
@@ -170,6 +175,7 @@ impl App {
             Action::CycleHeading => self.cycle_heading(),
             Action::ToggleQuote => self.toggle_line_prefix("> "),
             Action::ToggleBullet => self.toggle_line_prefix("- "),
+            Action::ToggleTask => self.toggle_task(),
         }
     }
 }

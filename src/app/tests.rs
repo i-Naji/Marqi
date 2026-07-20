@@ -93,6 +93,48 @@ fn formatting_actions_preserve_indentation_and_line_endings() {
     assert_eq!(a.buffer.rope().to_string(), "  - > # title\r\nnext\r\n");
 }
 
+#[test]
+fn task_action_preserves_existing_list_markers() {
+    let mut a = app_with("  * [ ] task\r\n");
+    a.run_action(Action::ToggleTask);
+    assert_eq!(a.buffer.rope().to_string(), "  * [x] task\r\n");
+    a.run_action(Action::ToggleTask);
+    assert_eq!(a.buffer.rope().to_string(), "  * [ ] task\r\n");
+
+    let mut ordered = app_with("1. task\n");
+    ordered.run_action(Action::ToggleTask);
+    assert_eq!(ordered.buffer.rope().to_string(), "1. [ ] task\n");
+}
+
+#[test]
+fn clicking_a_rendered_checkbox_toggles_its_source() {
+    let mut a = app_with("intro\n\n- [ ] task\n");
+    a.cursor.byte = 0;
+    a.set_viewport(40, 10);
+    let rows = a.visible_rows();
+    let (y, x) = rows
+        .lines
+        .iter()
+        .enumerate()
+        .find_map(|(y, line)| {
+            let text: String = line
+                .spans
+                .iter()
+                .map(|span| span.content.as_ref())
+                .collect();
+            text.find('□').map(|x| (y, x))
+        })
+        .expect("rendered task checkbox");
+
+    a.handle_mouse(mouse(
+        MouseEventKind::Down(MouseButton::Left),
+        x as u16,
+        y as u16,
+    ));
+
+    assert_eq!(a.buffer.rope().to_string(), "intro\n\n- [x] task\n");
+}
+
 fn press(app: &mut App, code: KeyCode) {
     press_mod(app, code, KeyModifiers::NONE);
 }
