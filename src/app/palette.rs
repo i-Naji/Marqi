@@ -107,7 +107,7 @@ impl Palette {
     }
 }
 
-fn fuzzy_score(label: &str, query: &str) -> Option<i32> {
+pub(super) fn fuzzy_score(label: &str, query: &str) -> Option<i32> {
     if query.is_empty() {
         return Some(0);
     }

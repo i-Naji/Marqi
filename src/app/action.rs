@@ -28,10 +28,11 @@ pub enum Action {
     ToggleQuote,
     ToggleBullet,
     ToggleTask,
+    Outline,
 }
 
 impl Action {
-    pub const ALL: [Self; 25] = [
+    pub const ALL: [Self; 26] = [
         Self::Save,
         Self::SaveAs,
         Self::Find,
@@ -50,6 +51,7 @@ impl Action {
         Self::ToggleQuote,
         Self::ToggleBullet,
         Self::ToggleTask,
+        Self::Outline,
         Self::TogglePreview,
         Self::ToggleRaw,
         Self::ToggleTable,
@@ -87,6 +89,7 @@ impl Action {
             Self::ToggleQuote => "Toggle block quote",
             Self::ToggleBullet => "Toggle bullet list",
             Self::ToggleTask => "Toggle task item",
+            Self::Outline => "Document outline",
         }
     }
 
@@ -118,6 +121,7 @@ impl Action {
             | Self::ToggleQuote
             | Self::ToggleBullet => "",
             Self::ToggleTask => "",
+            Self::Outline => "Ctrl+Shift+O",
         }
     }
 }
@@ -141,6 +145,7 @@ impl App {
             | Action::ToggleQuote
             | Action::ToggleBullet => !self.mode.is_read(),
             Action::ToggleTask => !self.mode.is_read(),
+            Action::Outline => true,
             _ => true,
         }
     }
@@ -176,6 +181,7 @@ impl App {
             Action::ToggleQuote => self.toggle_line_prefix("> "),
             Action::ToggleBullet => self.toggle_line_prefix("- "),
             Action::ToggleTask => self.toggle_task(),
+            Action::Outline => self.open_outline(),
         }
     }
 }

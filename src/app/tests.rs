@@ -135,6 +135,34 @@ fn clicking_a_rendered_checkbox_toggles_its_source() {
     assert_eq!(a.buffer.rope().to_string(), "intro\n\n- [x] task\n");
 }
 
+#[test]
+fn outline_filters_headings_and_jumps_to_source() {
+    let mut a = app_with("# First\n\nbody\n\nSecond\n------\n\n### Third\n");
+    press_mod(
+        &mut a,
+        KeyCode::Char('o'),
+        KeyModifiers::CONTROL | KeyModifiers::SHIFT,
+    );
+    assert!(a.outline_open());
+    let items = a.outline_items();
+    assert_eq!(
+        items
+            .iter()
+            .map(|item| (item.level, item.title.as_str()))
+            .collect::<Vec<_>>(),
+        [(1, "First"), (2, "Second"), (3, "Third")]
+    );
+
+    type_str(&mut a, "sec");
+    let items = a.outline_items();
+    assert_eq!(items.len(), 1);
+    assert_eq!(items[0].title, "Second");
+    press(&mut a, KeyCode::Enter);
+
+    assert!(!a.outline_open());
+    assert_eq!(a.buffer.rope().byte_to_line(a.cursor.byte), 4);
+}
+
 fn press(app: &mut App, code: KeyCode) {
     press_mod(app, code, KeyModifiers::NONE);
 }

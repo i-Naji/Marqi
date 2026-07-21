@@ -90,6 +90,7 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
         if prompt.is_none()
             && !app.menu_open()
             && !app.palette_open()
+            && !app.outline_open()
             && let Some(pos) = cursor_position(app, content_area)
         {
             frame.set_cursor_position(pos);
@@ -122,6 +123,9 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
     }
     if app.palette_open() {
         draw_palette(frame, app, editor_area);
+    }
+    if app.outline_open() {
+        draw_outline(frame, app, editor_area);
     }
 }
 
@@ -175,6 +179,8 @@ fn build_status(app: &App, width: usize) -> Line<'static> {
                     .to_string()
             } else if app.palette_open() {
                 "↑↓ move · type to filter · ⏎ run · esc close ".to_string()
+            } else if app.outline_open() {
+                "↑↓ move · type to filter · ⏎ jump · esc close ".to_string()
             } else if app.mode.is_read() {
                 "q/Esc back · ^G menu · ^Q quit ".to_string()
             } else {
@@ -214,6 +220,9 @@ fn build_status(app: &App, width: usize) -> Line<'static> {
 
 /// Badge label and accent color for the current mode.
 fn mode_badge(app: &App) -> (&'static str, ratatui::style::Color) {
+    if app.outline_open() {
+        return ("OUTLINE", rgb(0x9e, 0xce, 0x6a));
+    }
     if app.palette_open() {
         return ("COMMAND", rgb(0xbb, 0x9a, 0xf7));
     }
@@ -641,6 +650,61 @@ fn draw_palette(frame: &mut Frame, app: &App, area: Rect) {
                 "{mark} {:<38} {:>18}",
                 item.action.label(),
                 item.action.shortcut()
+            ),
+            style,
+        )));
+    }
+    frame.render_widget(Paragraph::new(lines).style(theme.text), inner);
+}
+
+fn draw_outline(frame: &mut Frame, app: &mut App, area: Rect) {
+    let items = app.outline_items();
+    let theme = app.theme();
+    let width = 64.min(area.width.saturating_sub(2).max(1));
+    let height = (items.len() as u16 + 3).min(area.height.saturating_sub(1).max(1));
+    let popup = Rect::new(
+        area.x + area.width.saturating_sub(width) / 2,
+        area.y + area.height.saturating_sub(height) / 3,
+        width,
+        height,
+    );
+
+    frame.render_widget(Clear, popup);
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_type(BorderType::Rounded)
+        .title(Span::styled(" Document outline ", theme.heading(2)))
+        .style(theme.text.bg(theme.help_background));
+    let inner = block.inner(popup);
+    frame.render_widget(block, popup);
+
+    let mut lines = vec![Line::from(vec![
+        Span::styled("> ", theme.keyword_note),
+        Span::styled(app.outline_query().to_string(), theme.text),
+    ])];
+    for item in items
+        .into_iter()
+        .take(inner.height.saturating_sub(1) as usize)
+    {
+        let mut style = theme.text;
+        if item.selected {
+            style = style.bg(theme.selection);
+        } else if item.current {
+            style = theme.keyword_note;
+        }
+        let mark = if item.selected {
+            "▸"
+        } else if item.current {
+            "•"
+        } else {
+            " "
+        };
+        lines.push(Line::from(Span::styled(
+            format!(
+                "{mark} {}{}  L{}",
+                "  ".repeat(item.level.saturating_sub(1)),
+                item.title,
+                item.line + 1
             ),
             style,
         )));

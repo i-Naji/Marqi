@@ -230,6 +230,16 @@ impl ViewCache {
         self.index.stats()
     }
 
+    pub fn heading_blocks(&mut self, rope: &Rope, version: u64) -> Vec<SourceBlock> {
+        self.ensure_blocks(rope, version);
+        self.index
+            .blocks()
+            .iter()
+            .filter(|block| block.kind == crate::block_index::BlockKind::Heading)
+            .cloned()
+            .collect()
+    }
+
     /// Incrementally absorb one edit into the block index (see
     /// [`BlockIndex::apply_edit`]); called synchronously per buffer mutation.
     pub fn apply_edit(
