@@ -163,6 +163,39 @@ fn outline_filters_headings_and_jumps_to_source() {
     assert_eq!(a.buffer.rope().byte_to_line(a.cursor.byte), 4);
 }
 
+#[test]
+fn follow_link_resolves_references_and_confirms_external_urls() {
+    let mut a = app_with("See [site][docs].\n\n[docs]: https://example.com\n");
+    a.cursor.byte = 6;
+    a.run_action(Action::FollowLink);
+    let prompt = a.prompt_view().expect("external URL confirmation");
+    assert!(prompt.text.contains("https://example.com"));
+    press(&mut a, KeyCode::Char('n'));
+    assert_eq!(a.status.as_deref(), Some("Open cancelled"));
+}
+
+#[test]
+fn follow_link_moves_between_footnote_reference_and_definition() {
+    let source = "Text[^note].\n\n[^note]: Footnote text\n";
+    let mut a = app_with(source);
+    a.cursor.byte = source.find("[^note]").unwrap();
+    a.run_action(Action::FollowLink);
+    assert_eq!(a.buffer.rope().byte_to_line(a.cursor.byte), 2);
+
+    a.run_action(Action::FollowLink);
+    assert_eq!(a.cursor.byte, source.find("[^note]").unwrap());
+}
+
+#[test]
+fn follow_link_reports_when_nothing_is_available() {
+    let mut a = app_with("plain text");
+    a.run_action(Action::FollowLink);
+    assert_eq!(
+        a.status.as_deref(),
+        Some("No link or footnote under cursor")
+    );
+}
+
 fn press(app: &mut App, code: KeyCode) {
     press_mod(app, code, KeyModifiers::NONE);
 }

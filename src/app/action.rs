@@ -29,10 +29,11 @@ pub enum Action {
     ToggleBullet,
     ToggleTask,
     Outline,
+    FollowLink,
 }
 
 impl Action {
-    pub const ALL: [Self; 26] = [
+    pub const ALL: [Self; 27] = [
         Self::Save,
         Self::SaveAs,
         Self::Find,
@@ -52,6 +53,7 @@ impl Action {
         Self::ToggleBullet,
         Self::ToggleTask,
         Self::Outline,
+        Self::FollowLink,
         Self::TogglePreview,
         Self::ToggleRaw,
         Self::ToggleTable,
@@ -90,6 +92,7 @@ impl Action {
             Self::ToggleBullet => "Toggle bullet list",
             Self::ToggleTask => "Toggle task item",
             Self::Outline => "Document outline",
+            Self::FollowLink => "Follow link or footnote",
         }
     }
 
@@ -122,6 +125,7 @@ impl Action {
             | Self::ToggleBullet => "",
             Self::ToggleTask => "",
             Self::Outline => "Ctrl+Shift+O",
+            Self::FollowLink => "",
         }
     }
 }
@@ -146,6 +150,7 @@ impl App {
             | Action::ToggleBullet => !self.mode.is_read(),
             Action::ToggleTask => !self.mode.is_read(),
             Action::Outline => true,
+            Action::FollowLink => !self.mode.is_read(),
             _ => true,
         }
     }
@@ -182,6 +187,7 @@ impl App {
             Action::ToggleBullet => self.toggle_line_prefix("- "),
             Action::ToggleTask => self.toggle_task(),
             Action::Outline => self.open_outline(),
+            Action::FollowLink => self.follow_link(),
         }
     }
 }

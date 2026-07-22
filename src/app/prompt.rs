@@ -41,6 +41,9 @@ pub(super) enum Prompt {
     Recovery {
         error: Option<String>,
     },
+    ExternalUrl {
+        url: String,
+    },
     /// Incremental find; the current match is shown as the selection.
     Find {
         input: String,
@@ -137,6 +140,10 @@ impl App {
                     cursor_col: None,
                 })
             }
+            Prompt::ExternalUrl { url } => Some(PromptView {
+                text: format!("Open external URL {url}?  (y/n)"),
+                cursor_col: None,
+            }),
             Prompt::Find { input, cursor } => {
                 let mut text = format!("{FIND_LABEL}{input}");
                 if !input.is_empty() {
@@ -196,6 +203,7 @@ impl App {
             Some(Prompt::ConfirmQuit) => self.confirm_quit_key(key),
             Some(Prompt::ExternalChange { error: _ }) => self.external_change_key(key),
             Some(Prompt::Recovery { error: _ }) => self.recovery_key(key),
+            Some(Prompt::ExternalUrl { url }) => self.external_url_key(key, url),
             Some(Prompt::Find { input, cursor }) => self.find_key(key, input, cursor),
             Some(Prompt::Replace {
                 query,
@@ -281,6 +289,25 @@ impl App {
                 }
             }
             _ => self.prompt = Some(Prompt::Recovery { error: None }),
+        }
+    }
+
+    pub(super) fn open_external_url_prompt(&mut self, url: String) {
+        self.prompt = Some(Prompt::ExternalUrl { url });
+    }
+
+    fn external_url_key(&mut self, key: KeyEvent, url: String) {
+        match key.code {
+            KeyCode::Char('y') | KeyCode::Char('Y') => {
+                self.status = Some(match super::navigation::launch_url(&url) {
+                    Ok(()) => "Opened external URL".to_string(),
+                    Err(error) => format!("Could not open URL: {error}"),
+                });
+            }
+            KeyCode::Char('n') | KeyCode::Char('N') | KeyCode::Esc => {
+                self.status = Some("Open cancelled".to_string());
+            }
+            _ => self.prompt = Some(Prompt::ExternalUrl { url }),
         }
     }
 

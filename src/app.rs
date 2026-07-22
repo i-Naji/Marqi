@@ -27,6 +27,7 @@ use crate::view::{self, HybridView, PreviewView, ViewCache};
 mod action;
 mod formatting;
 mod menu;
+mod navigation;
 mod outline;
 mod palette;
 mod prompt;
