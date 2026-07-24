@@ -160,6 +160,10 @@ pub struct App {
     pub buffer: TextBuffer,
     pub cursor: Cursor,
     pub scroll_y: usize,
+    focus_scroll_y: usize,
+    raw_scroll_y: usize,
+    read_scroll_y: usize,
+    read_cursor: usize,
     pub should_quit: bool,
     pub status: Option<String>,
     pub mode: Mode,
@@ -267,6 +271,10 @@ impl App {
             buffer,
             cursor: Cursor::default(),
             scroll_y: 0,
+            focus_scroll_y: 0,
+            raw_scroll_y: 0,
+            read_scroll_y: 0,
+            read_cursor: 0,
             should_quit: false,
             status: None,
             mode: Mode::Insert,
@@ -648,14 +656,17 @@ impl App {
     }
 
     fn toggle_preview(&mut self) {
-        self.mode = if self.mode == Mode::Read {
-            self.resting_mode()
-        } else {
-            Mode::Read
-        };
+        if self.mode == Mode::Read {
+            self.leave_preview();
+            return;
+        }
+        self.save_edit_scroll();
+        self.read_cursor = self.cursor.byte;
+        self.mode = Mode::Read;
         self.menu = None;
         self.selection_anchor = None;
-        self.scroll_y = 0;
+        self.scroll_y = self.read_scroll_y;
+        self.follow_cursor = false;
     }
 
     /// The mode the editor rests in for the active preset.
@@ -679,6 +690,9 @@ impl App {
     /// Switch to a specific keybinding preset (used by `^L` cycling and the
     /// settings popup, which steps in both directions).
     fn set_preset(&mut self, preset: Preset) {
+        if self.mode == Mode::Read {
+            self.leave_preview();
+        }
         self.preset = preset;
         self.mode = self.resting_mode();
         self.pending = None;
@@ -722,6 +736,16 @@ impl App {
     /// Toggle the raw view: every line shown as highlighted source (no markers
     /// stripped), still fully editable.
     fn toggle_raw_view(&mut self) {
+        if !self.mode.is_read() {
+            if self.raw_view {
+                self.raw_scroll_y = self.scroll_y;
+                self.scroll_y = self.focus_scroll_y;
+            } else {
+                self.focus_scroll_y = self.scroll_y;
+                self.scroll_y = self.raw_scroll_y;
+            }
+            self.follow_cursor = false;
+        }
         self.raw_view = !self.raw_view;
         self.view = None; // force a rebuild with the other builder
         self.status = Some(
@@ -749,11 +773,33 @@ impl App {
             KeyCode::Home | KeyCode::Char('g') => 0,
             KeyCode::End | KeyCode::Char('G') => max,
             KeyCode::Esc | KeyCode::Char('q') => {
-                self.mode = self.resting_mode();
-                self.scroll_y
+                self.leave_preview();
+                return;
             }
             _ => self.scroll_y,
         };
+    }
+
+    fn save_edit_scroll(&mut self) {
+        if self.raw_view {
+            self.raw_scroll_y = self.scroll_y;
+        } else {
+            self.focus_scroll_y = self.scroll_y;
+        }
+    }
+
+    fn leave_preview(&mut self) {
+        self.read_scroll_y = self.scroll_y;
+        self.mode = self.resting_mode();
+        self.cursor.byte = self.read_cursor.min(self.buffer.len_bytes());
+        self.scroll_y = if self.raw_view {
+            self.raw_scroll_y
+        } else {
+            self.focus_scroll_y
+        };
+        self.follow_cursor = false;
+        self.ensure_layout();
+        self.cursor.sync_goal(&self.layout);
     }
 
     /// Apply a motion, updating the selection (`extend` keeps/sets the anchor,

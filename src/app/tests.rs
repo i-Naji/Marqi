@@ -731,6 +731,31 @@ fn read_mode_q_returns_to_focus() {
 }
 
 #[test]
+fn views_keep_independent_scroll_positions_and_restore_the_cursor() {
+    let mut a = app_with(&"line\n".repeat(80));
+    a.scroll_y = 7;
+    a.cursor.byte = 10;
+
+    a.run_action(Action::ToggleRaw);
+    assert_eq!(a.scroll_y, 0);
+    a.scroll_y = 3;
+    a.run_action(Action::ToggleRaw);
+    assert_eq!(a.scroll_y, 7);
+    a.run_action(Action::ToggleRaw);
+    assert_eq!(a.scroll_y, 3);
+
+    a.run_action(Action::TogglePreview);
+    assert_eq!(a.scroll_y, 0);
+    a.scroll_y = 5;
+    a.cursor.byte = 0;
+    a.run_action(Action::TogglePreview);
+    assert_eq!(a.scroll_y, 3);
+    assert_eq!(a.cursor.byte, 10);
+    a.run_action(Action::TogglePreview);
+    assert_eq!(a.scroll_y, 5);
+}
+
+#[test]
 fn nano_preset_inserts_on_plain_keys() {
     let cfg: Config = toml::from_str("[editor]\nkeybindings = \"nano\"\n").unwrap();
     let mut a = App::with_config(TextBuffer::empty(), &cfg);

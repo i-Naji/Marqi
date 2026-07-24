@@ -78,7 +78,9 @@ impl App {
             KeyCode::Down => outline.move_selection(&headings, 1),
             KeyCode::Enter => {
                 if let Some(heading) = outline.matches(&headings).get(outline.selected) {
-                    self.mode = self.resting_mode();
+                    if self.mode == super::Mode::Read {
+                        self.leave_preview();
+                    }
                     self.cursor.byte = self.buffer.rope().line_to_byte(heading.line);
                     self.selection_anchor = None;
                     self.follow_cursor = true;
