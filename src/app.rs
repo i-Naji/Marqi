@@ -200,6 +200,7 @@ pub struct App {
 
     /// Save automatically after an idle pause (config `editor.auto_save`).
     auto_save: bool,
+    show_status_stats: bool,
     /// When the buffer was last edited, for the auto-save idle check.
     last_edit: Option<Instant>,
     auto_save_retry_at: Option<Instant>,
@@ -298,6 +299,7 @@ impl App {
             find_restore: None,
             find_scope: None,
             auto_save: false,
+            show_status_stats: false,
             last_edit: None,
             auto_save_retry_at: None,
             recovery_content: None,
@@ -364,6 +366,7 @@ impl App {
         app.scrolloff = config.editor.scrolloff;
         app.left_margin = config.editor.left_margin;
         app.auto_save = config.editor.auto_save;
+        app.show_status_stats = config.editor.status_stats;
         app.theme = MarkdownTheme::select(&config.theme.name, &config.theme.variant);
         app.theme.heading_glyphs = config.editor.heading_glyphs;
         app.theme.hard_breaks = config
@@ -435,6 +438,44 @@ impl App {
 
     pub fn left_margin(&self) -> usize {
         self.left_margin
+    }
+
+    pub fn status_stats_text(&self) -> Option<String> {
+        if !self.show_status_stats {
+            return None;
+        }
+        let mut words = 0usize;
+        let mut chars = 0usize;
+        let mut in_word = false;
+        for ch in self.buffer.rope().chars() {
+            chars += 1;
+            if ch.is_whitespace() {
+                in_word = false;
+            } else if !in_word {
+                words += 1;
+                in_word = true;
+            }
+        }
+        let minutes = words.div_ceil(200).max(1);
+        let selection = self
+            .selection_range()
+            .map(|(start, end)| self.buffer.slice(start, end).chars().count());
+        Some(match selection {
+            Some(selected) => format!("{words}w · {chars}c · {minutes}m · {selected} selected"),
+            None => format!("{words}w · {chars}c · {minutes}m"),
+        })
+    }
+
+    pub(super) fn toggle_status_stats(&mut self) {
+        self.show_status_stats = !self.show_status_stats;
+        self.status = Some(
+            if self.show_status_stats {
+                "Document statistics on"
+            } else {
+                "Document statistics off"
+            }
+            .to_string(),
+        );
     }
 
     pub fn theme(&self) -> &MarkdownTheme {

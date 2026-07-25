@@ -58,6 +58,7 @@ pub struct EditorConfig {
     pub scrolloff: usize,
     /// Save automatically ~2 seconds after the last edit (named buffers only).
     pub auto_save: bool,
+    pub status_stats: bool,
 }
 
 impl Default for EditorConfig {
@@ -71,8 +72,24 @@ impl Default for EditorConfig {
             tab_width: 4,
             scrolloff: 3,
             auto_save: false,
+            status_stats: false,
         }
     }
+}
+
+pub fn take_first_run_hint() -> bool {
+    let Some(dirs) = directories::ProjectDirs::from("", "", "marqi") else {
+        return false;
+    };
+    let dir = dirs.config_dir();
+    if std::fs::create_dir_all(dir).is_err() {
+        return false;
+    }
+    std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(dir.join(".welcomed"))
+        .is_ok()
 }
 
 #[derive(Deserialize)]

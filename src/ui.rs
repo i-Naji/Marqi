@@ -99,11 +99,13 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
 
     match prompt {
         Some(view) => {
+            let (text, cursor_col) =
+                prompt_window(&view.text, view.cursor_col, status_area.width as usize);
             frame.render_widget(
-                Paragraph::new(Line::from(view.text)).style(app.theme().status),
+                Paragraph::new(Line::from(text)).style(app.theme().status),
                 status_area,
             );
-            if let Some(col) = view.cursor_col {
+            if let Some(col) = cursor_col {
                 let x = status_area.x + col.min(status_area.width.saturating_sub(1));
                 frame.set_cursor_position(Position::new(x, status_area.y));
             }
@@ -182,10 +184,16 @@ fn build_status(app: &App, width: usize) -> Line<'static> {
             } else if app.outline_open() {
                 "↑↓ move · type to filter · ⏎ jump · esc close ".to_string()
             } else if app.mode.is_read() {
-                "q/Esc back · ^G menu · ^Q quit ".to_string()
+                match app.status_stats_text() {
+                    Some(stats) => format!("{stats}   q/Esc back · ^Q quit "),
+                    None => "q/Esc back · ^G menu · ^Q quit ".to_string(),
+                }
             } else {
                 let (line, col) = app.cursor_line_col();
-                format!("Ln {line}, Col {col}   ^G menu · ^S save · ^Q quit ")
+                match app.status_stats_text() {
+                    Some(stats) => format!("{stats}   Ln {line}, Col {col}   ^S save · ^Q quit "),
+                    None => format!("Ln {line}, Col {col}   ^G menu · ^S save · ^Q quit "),
+                }
             };
             (hints, status.add_modifier(Modifier::DIM))
         }
@@ -302,6 +310,37 @@ fn clip_to_width(text: &str, width: usize) -> String {
         used += w;
     }
     out
+}
+
+fn prompt_window(text: &str, cursor_col: Option<u16>, width: usize) -> (String, Option<u16>) {
+    if width == 0 {
+        return (String::new(), cursor_col.map(|_| 0));
+    }
+    let wanted_start = cursor_col
+        .map_or(0, usize::from)
+        .saturating_sub(width.saturating_sub(1));
+    let mut out = String::new();
+    let mut col = 0usize;
+    let mut start_col = None;
+    let mut used = 0usize;
+    for grapheme in text.graphemes(true) {
+        let grapheme_width = display_width(grapheme);
+        if col + grapheme_width <= wanted_start {
+            col += grapheme_width;
+            continue;
+        }
+        start_col.get_or_insert(col);
+        if used + grapheme_width > width {
+            break;
+        }
+        out.push_str(grapheme);
+        used += grapheme_width;
+        col += grapheme_width;
+    }
+    let start_col = start_col.unwrap_or(wanted_start);
+    let cursor = cursor_col
+        .map(|cursor| usize::from(cursor).saturating_sub(start_col).min(width - 1) as u16);
+    (out, cursor)
 }
 
 /// Platform-aware Control chord: `⌃S` on macOS, `Ctrl+S` elsewhere.
@@ -714,13 +753,24 @@ fn draw_outline(frame: &mut Frame, app: &mut App, area: Rect) {
 
 #[cfg(test)]
 mod tests {
-    use super::{build_status, clip_to_width, display_width, gutter_lines, gutter_width};
+    use super::{
+        build_status, clip_to_width, display_width, gutter_lines, gutter_width, prompt_window,
+    };
     use crate::{app::App, buffer::TextBuffer, config::Config};
 
     #[test]
     fn clipping_preserves_whole_graphemes() {
         assert_eq!(clip_to_width("a中b", 3), "a中");
         assert_eq!(clip_to_width("👨‍👩‍👧‍👦x", 2), "👨‍👩‍👧‍👦");
+    }
+
+    #[test]
+    fn long_prompts_keep_the_cursor_visible() {
+        let text = "Save as: /a/very/long/path/to/a/document.md";
+        let (shown, cursor) = prompt_window(text, Some(text.len() as u16), 18);
+        assert!(shown.ends_with("document.md"));
+        assert_eq!(cursor, Some(17));
+        assert!(display_width(&shown) <= 18);
     }
 
     #[test]

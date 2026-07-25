@@ -196,6 +196,19 @@ fn follow_link_reports_when_nothing_is_available() {
     );
 }
 
+#[test]
+fn document_statistics_include_the_selection() {
+    let mut a = app_with("one two\nthree");
+    a.run_action(Action::ToggleStats);
+    assert_eq!(a.status_stats_text().as_deref(), Some("3w · 13c · 1m"));
+    a.selection_anchor = Some(0);
+    a.cursor.byte = 3;
+    assert_eq!(
+        a.status_stats_text().as_deref(),
+        Some("3w · 13c · 1m · 3 selected")
+    );
+}
+
 fn press(app: &mut App, code: KeyCode) {
     press_mod(app, code, KeyModifiers::NONE);
 }

@@ -18,6 +18,8 @@ soft_break = "space"
 # Save automatically ~2 seconds after the last edit. Applies only to buffers
 # that already have a filename (an unnamed buffer never pops a prompt at you).
 auto_save = false
+# Show words, characters, selection size, and estimated reading time.
+status_stats = false
 # Blank columns between the terminal's left edge and the editor content.
 # 0 or any positive number; 0 starts text flush at the edge.
 left_margin = 1

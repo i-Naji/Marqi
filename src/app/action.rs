@@ -30,10 +30,11 @@ pub enum Action {
     ToggleTask,
     Outline,
     FollowLink,
+    ToggleStats,
 }
 
 impl Action {
-    pub const ALL: [Self; 27] = [
+    pub const ALL: [Self; 28] = [
         Self::Save,
         Self::SaveAs,
         Self::Find,
@@ -54,6 +55,7 @@ impl Action {
         Self::ToggleTask,
         Self::Outline,
         Self::FollowLink,
+        Self::ToggleStats,
         Self::TogglePreview,
         Self::ToggleRaw,
         Self::ToggleTable,
@@ -93,6 +95,7 @@ impl Action {
             Self::ToggleTask => "Toggle task item",
             Self::Outline => "Document outline",
             Self::FollowLink => "Follow link or footnote",
+            Self::ToggleStats => "Toggle document statistics",
         }
     }
 
@@ -126,6 +129,7 @@ impl Action {
             Self::ToggleTask => "",
             Self::Outline => "Ctrl+Shift+O",
             Self::FollowLink => "",
+            Self::ToggleStats => "",
         }
     }
 }
@@ -151,6 +155,7 @@ impl App {
             Action::ToggleTask => !self.mode.is_read(),
             Action::Outline => true,
             Action::FollowLink => !self.mode.is_read(),
+            Action::ToggleStats => true,
             _ => true,
         }
     }
@@ -188,6 +193,7 @@ impl App {
             Action::ToggleTask => self.toggle_task(),
             Action::Outline => self.open_outline(),
             Action::FollowLink => self.follow_link(),
+            Action::ToggleStats => self.toggle_status_stats(),
         }
     }
 }
