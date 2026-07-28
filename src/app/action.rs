@@ -31,10 +31,11 @@ pub enum Action {
     Outline,
     FollowLink,
     ToggleStats,
+    RecentFiles,
 }
 
 impl Action {
-    pub const ALL: [Self; 28] = [
+    pub const ALL: [Self; 29] = [
         Self::Save,
         Self::SaveAs,
         Self::Find,
@@ -56,6 +57,7 @@ impl Action {
         Self::Outline,
         Self::FollowLink,
         Self::ToggleStats,
+        Self::RecentFiles,
         Self::TogglePreview,
         Self::ToggleRaw,
         Self::ToggleTable,
@@ -96,6 +98,7 @@ impl Action {
             Self::Outline => "Document outline",
             Self::FollowLink => "Follow link or footnote",
             Self::ToggleStats => "Toggle document statistics",
+            Self::RecentFiles => "Open recent file",
         }
     }
 
@@ -130,6 +133,7 @@ impl Action {
             Self::Outline => "Ctrl+Shift+O",
             Self::FollowLink => "",
             Self::ToggleStats => "",
+            Self::RecentFiles => "",
         }
     }
 }
@@ -156,6 +160,7 @@ impl App {
             Action::Outline => true,
             Action::FollowLink => !self.mode.is_read(),
             Action::ToggleStats => true,
+            Action::RecentFiles => !self.buffer.modified(),
             _ => true,
         }
     }
@@ -194,6 +199,7 @@ impl App {
             Action::Outline => self.open_outline(),
             Action::FollowLink => self.follow_link(),
             Action::ToggleStats => self.toggle_status_stats(),
+            Action::RecentFiles => self.open_recent_files(),
         }
     }
 }

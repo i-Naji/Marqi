@@ -97,6 +97,9 @@ fn run_editor(path: Option<String>, config_path: Option<PathBuf>) -> Result<()> 
 
     let (config, config_warning) = load_config(config_path.as_deref());
     let mut app = App::with_config(buffer, &config);
+    if let Err(error) = app.load_session() {
+        app.status = Some(format!("Session not restored: {error}"));
+    }
     if let Some(warning) = config_warning {
         app.status = Some(warning);
     }
@@ -109,11 +112,15 @@ fn run_editor(path: Option<String>, config_path: Option<PathBuf>) -> Result<()> 
 
     let mut terminal = tui::init()?;
     let result = run(&mut terminal, &mut app);
+    let session_error = app.save_session().err();
     // Restore the terminal even if the run loop errored. A run-loop error is
     // the more informative of the two, so report it first.
     let restored = tui::restore();
     if app::stats_enabled() {
         eprintln!("{}", app.stats_dump());
+    }
+    if let Some(error) = session_error {
+        eprintln!("Session not saved: {error}");
     }
     result.and(restored)
 }

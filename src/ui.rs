@@ -91,6 +91,7 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
             && !app.menu_open()
             && !app.palette_open()
             && !app.outline_open()
+            && !app.recent_picker_open()
             && let Some(pos) = cursor_position(app, content_area)
         {
             frame.set_cursor_position(pos);
@@ -128,6 +129,9 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
     }
     if app.outline_open() {
         draw_outline(frame, app, editor_area);
+    }
+    if app.recent_picker_open() {
+        draw_recent_files(frame, app, editor_area);
     }
 }
 
@@ -183,6 +187,8 @@ fn build_status(app: &App, width: usize) -> Line<'static> {
                 "↑↓ move · type to filter · ⏎ run · esc close ".to_string()
             } else if app.outline_open() {
                 "↑↓ move · type to filter · ⏎ jump · esc close ".to_string()
+            } else if app.recent_picker_open() {
+                "↑↓ move · type to filter · ⏎ open · esc close ".to_string()
             } else if app.mode.is_read() {
                 match app.status_stats_text() {
                     Some(stats) => format!("{stats}   q/Esc back · ^Q quit "),
@@ -228,6 +234,9 @@ fn build_status(app: &App, width: usize) -> Line<'static> {
 
 /// Badge label and accent color for the current mode.
 fn mode_badge(app: &App) -> (&'static str, ratatui::style::Color) {
+    if app.recent_picker_open() {
+        return ("RECENT", rgb(0xe0, 0xaf, 0x68));
+    }
     if app.outline_open() {
         return ("OUTLINE", rgb(0x9e, 0xce, 0x6a));
     }
@@ -745,6 +754,49 @@ fn draw_outline(frame: &mut Frame, app: &mut App, area: Rect) {
                 item.title,
                 item.line + 1
             ),
+            style,
+        )));
+    }
+    frame.render_widget(Paragraph::new(lines).style(theme.text), inner);
+}
+
+fn draw_recent_files(frame: &mut Frame, app: &App, area: Rect) {
+    let theme = app.theme();
+    let items = app.recent_items();
+    let width = 76.min(area.width.saturating_sub(2).max(1));
+    let height = (items.len() as u16 + 3).min(area.height.saturating_sub(1).max(1));
+    let popup = Rect::new(
+        area.x + area.width.saturating_sub(width) / 2,
+        area.y + area.height.saturating_sub(height) / 3,
+        width,
+        height,
+    );
+
+    frame.render_widget(Clear, popup);
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_type(BorderType::Rounded)
+        .title(Span::styled(" Recent files ", theme.heading(2)))
+        .style(theme.text.bg(theme.help_background));
+    let inner = block.inner(popup);
+    frame.render_widget(block, popup);
+
+    let mut lines = vec![Line::from(vec![
+        Span::styled("> ", theme.keyword_note),
+        Span::styled(app.recent_query().to_string(), theme.text),
+    ])];
+    for item in items
+        .into_iter()
+        .take(inner.height.saturating_sub(1) as usize)
+    {
+        let style = if item.selected {
+            theme.text.bg(theme.selection)
+        } else {
+            theme.text
+        };
+        let mark = if item.selected { "▸" } else { " " };
+        lines.push(Line::from(Span::styled(
+            format!("{mark} {}", item.path),
             style,
         )));
     }
