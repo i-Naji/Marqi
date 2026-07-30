@@ -1034,6 +1034,71 @@ fn save_as_keeps_write_errors_visible() {
 }
 
 #[test]
+fn file_actions_protect_unsaved_changes() {
+    let mut a = app();
+    type_str(&mut a, "draft");
+
+    for action in [Action::NewFile, Action::OpenFile] {
+        assert!(!a.action_enabled(action));
+        a.run_action(action);
+        assert_eq!(a.buffer.rope().to_string(), "draft");
+    }
+}
+
+#[test]
+fn open_file_prompt_switches_documents() {
+    let path = std::env::temp_dir().join(format!("marqi_open_{}.md", std::process::id()));
+    std::fs::write(&path, "opened").unwrap();
+    let mut a = app();
+
+    a.run_action(Action::OpenFile);
+    type_str(&mut a, path.to_str().unwrap());
+    press(&mut a, KeyCode::Enter);
+
+    assert_eq!(a.buffer.path(), Some(path.as_path()));
+    assert_eq!(a.buffer.rope().to_string(), "opened");
+    assert!(a.prompt_view().is_none());
+    std::fs::remove_file(path).ok();
+}
+
+#[test]
+fn rename_file_prompt_moves_the_current_file() {
+    let original = std::env::temp_dir().join(format!("marqi_rename_{}.md", std::process::id()));
+    let renamed = std::env::temp_dir().join(format!("marqi_renamed_{}.md", std::process::id()));
+    std::fs::write(&original, "text").unwrap();
+    std::fs::remove_file(&renamed).ok();
+    let mut a = App::new(TextBuffer::from_path(&original).unwrap());
+
+    a.run_action(Action::RenameFile);
+    press(&mut a, KeyCode::Home);
+    for _ in 0..original.to_string_lossy().len() {
+        press(&mut a, KeyCode::Delete);
+    }
+    type_str(&mut a, renamed.to_str().unwrap());
+    press(&mut a, KeyCode::Enter);
+
+    assert!(!original.exists());
+    assert_eq!(a.buffer.path(), Some(renamed.as_path()));
+    assert_eq!(std::fs::read_to_string(&renamed).unwrap(), "text");
+    std::fs::remove_file(renamed).ok();
+}
+
+#[test]
+fn trash_file_requires_confirmation() {
+    let path = std::env::temp_dir().join(format!("marqi_trash_{}.md", std::process::id()));
+    std::fs::write(&path, "text").unwrap();
+    let mut a = App::new(TextBuffer::from_path(&path).unwrap());
+
+    a.run_action(Action::TrashFile);
+    assert!(a.prompt_view().unwrap().text.contains("to trash"));
+    press(&mut a, KeyCode::Esc);
+
+    assert!(path.exists());
+    assert_eq!(a.buffer.path(), Some(path.as_path()));
+    std::fs::remove_file(path).ok();
+}
+
+#[test]
 fn raw_view_shows_source_with_markers() {
     let mut a = app_with("# Title\n\nA **bold** word.\n");
     press_mod(&mut a, KeyCode::Char('r'), KeyModifiers::CONTROL);

@@ -25,6 +25,7 @@ use crate::text::{next_grapheme, prev_grapheme};
 use crate::view::{self, HybridView, PreviewView, ViewCache};
 
 mod action;
+mod file_ops;
 mod formatting;
 mod menu;
 mod navigation;

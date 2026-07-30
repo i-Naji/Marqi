@@ -11,7 +11,7 @@ const MAX_RECENT_FILES: usize = 20;
 
 #[derive(Clone, Serialize, Deserialize)]
 pub struct RecentFile {
-    path: String,
+    pub(super) path: String,
     cursor: usize,
     focus_scroll: usize,
     raw_scroll: usize,
@@ -176,7 +176,7 @@ impl App {
         Ok(())
     }
 
-    fn remember_current_file(&mut self) {
+    pub(super) fn remember_current_file(&mut self) {
         let Some(path) = self.buffer.path().map(path_key) else {
             return;
         };

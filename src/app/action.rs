@@ -32,10 +32,14 @@ pub enum Action {
     FollowLink,
     ToggleStats,
     RecentFiles,
+    NewFile,
+    OpenFile,
+    RenameFile,
+    TrashFile,
 }
 
 impl Action {
-    pub const ALL: [Self; 29] = [
+    pub const ALL: [Self; 33] = [
         Self::Save,
         Self::SaveAs,
         Self::Find,
@@ -58,6 +62,10 @@ impl Action {
         Self::FollowLink,
         Self::ToggleStats,
         Self::RecentFiles,
+        Self::NewFile,
+        Self::OpenFile,
+        Self::RenameFile,
+        Self::TrashFile,
         Self::TogglePreview,
         Self::ToggleRaw,
         Self::ToggleTable,
@@ -99,6 +107,10 @@ impl Action {
             Self::FollowLink => "Follow link or footnote",
             Self::ToggleStats => "Toggle document statistics",
             Self::RecentFiles => "Open recent file",
+            Self::NewFile => "New document",
+            Self::OpenFile => "Open file",
+            Self::RenameFile => "Rename file",
+            Self::TrashFile => "Move file to trash",
         }
     }
 
@@ -134,6 +146,7 @@ impl Action {
             Self::FollowLink => "",
             Self::ToggleStats => "",
             Self::RecentFiles => "",
+            Self::NewFile | Self::OpenFile | Self::RenameFile | Self::TrashFile => "",
         }
     }
 }
@@ -161,6 +174,10 @@ impl App {
             Action::FollowLink => !self.mode.is_read(),
             Action::ToggleStats => true,
             Action::RecentFiles => !self.buffer.modified(),
+            Action::NewFile | Action::OpenFile => !self.buffer.modified(),
+            Action::RenameFile | Action::TrashFile => {
+                !self.buffer.modified() && self.buffer.has_path()
+            }
             _ => true,
         }
     }
@@ -200,6 +217,10 @@ impl App {
             Action::FollowLink => self.follow_link(),
             Action::ToggleStats => self.toggle_status_stats(),
             Action::RecentFiles => self.open_recent_files(),
+            Action::NewFile => self.new_document(),
+            Action::OpenFile => self.open_file_prompt(),
+            Action::RenameFile => self.rename_file_prompt(),
+            Action::TrashFile => self.trash_file_prompt(),
         }
     }
 }

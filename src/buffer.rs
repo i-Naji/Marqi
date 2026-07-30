@@ -211,6 +211,15 @@ impl TextBuffer {
         self.modified = true;
     }
 
+    pub fn rename_to(&mut self, path: PathBuf) -> Result<()> {
+        let current = self.path.as_ref().context("no file name to rename")?;
+        fs::rename(current, &path)
+            .with_context(|| format!("renaming {} to {}", current.display(), path.display()))?;
+        self.path = Some(path.clone());
+        self.disk_state = fingerprint_from_disk(&path)?;
+        Ok(())
+    }
+
     /// Insert `text` at byte offset `byte`. Returns the byte offset just past
     /// the inserted text (the new cursor position).
     ///

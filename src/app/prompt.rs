@@ -19,6 +19,21 @@ const SAVE_LABEL: &str = "Save as: ";
 const FIND_LABEL: &str = "Find: ";
 const REPLACE_LABEL: &str = "Replace with: ";
 
+#[derive(Clone, Copy)]
+pub(super) enum FilePathKind {
+    Open,
+    Rename,
+}
+
+impl FilePathKind {
+    fn label(self) -> &'static str {
+        match self {
+            Self::Open => "Open file: ",
+            Self::Rename => "Rename to: ",
+        }
+    }
+}
+
 pub(super) enum Prompt {
     /// Editing a filename for an unnamed buffer. `cursor` is a byte offset into
     /// `input` (always on a grapheme boundary).
@@ -43,6 +58,15 @@ pub(super) enum Prompt {
     },
     ExternalUrl {
         url: String,
+    },
+    FilePath {
+        kind: FilePathKind,
+        input: String,
+        cursor: usize,
+        error: Option<String>,
+    },
+    ConfirmTrash {
+        path: PathBuf,
     },
     /// Incremental find; the current match is shown as the selection.
     Find {
@@ -144,6 +168,27 @@ impl App {
                 text: format!("Open external URL {url}?  (y/n)"),
                 cursor_col: None,
             }),
+            Prompt::FilePath {
+                kind,
+                input,
+                cursor,
+                error,
+            } => {
+                let label = error.as_ref().map_or_else(
+                    || kind.label().to_string(),
+                    |error| format!("{error} · {}", kind.label()),
+                );
+                let col = UnicodeWidthStr::width(label.as_str())
+                    + UnicodeWidthStr::width(&input[..*cursor]);
+                Some(PromptView {
+                    text: format!("{label}{input}"),
+                    cursor_col: Some(col as u16),
+                })
+            }
+            Prompt::ConfirmTrash { path } => Some(PromptView {
+                text: format!("Move {} to trash?  (y/n)", path.display()),
+                cursor_col: None,
+            }),
             Prompt::Find { input, cursor } => {
                 let mut text = format!("{FIND_LABEL}{input}");
                 if !input.is_empty() {
@@ -204,6 +249,13 @@ impl App {
             Some(Prompt::ExternalChange { error: _ }) => self.external_change_key(key),
             Some(Prompt::Recovery { error: _ }) => self.recovery_key(key),
             Some(Prompt::ExternalUrl { url }) => self.external_url_key(key, url),
+            Some(Prompt::FilePath {
+                kind,
+                input,
+                cursor,
+                error: _,
+            }) => self.file_path_key(key, kind, input, cursor),
+            Some(Prompt::ConfirmTrash { path }) => self.confirm_trash_key(key, path),
             Some(Prompt::Find { input, cursor }) => self.find_key(key, input, cursor),
             Some(Prompt::Replace {
                 query,
@@ -294,6 +346,138 @@ impl App {
 
     pub(super) fn open_external_url_prompt(&mut self, url: String) {
         self.prompt = Some(Prompt::ExternalUrl { url });
+    }
+
+    pub(super) fn open_file_prompt(&mut self) {
+        if self.buffer.modified() {
+            self.status = Some("Save or discard changes before switching files".to_string());
+            return;
+        }
+        self.prompt = Some(Prompt::FilePath {
+            kind: FilePathKind::Open,
+            input: String::new(),
+            cursor: 0,
+            error: None,
+        });
+    }
+
+    pub(super) fn rename_file_prompt(&mut self) {
+        if self.buffer.modified() {
+            self.status = Some("Save changes before renaming".to_string());
+            return;
+        }
+        let Some(path) = self.buffer.path() else {
+            self.status = Some("Save the document before renaming".to_string());
+            return;
+        };
+        let input = path.display().to_string();
+        let cursor = input.len();
+        self.prompt = Some(Prompt::FilePath {
+            kind: FilePathKind::Rename,
+            input,
+            cursor,
+            error: None,
+        });
+    }
+
+    pub(super) fn trash_file_prompt(&mut self) {
+        if self.buffer.modified() {
+            self.status = Some("Save changes before moving to trash".to_string());
+            return;
+        }
+        let Some(path) = self.buffer.path() else {
+            self.status = Some("Document has no file to trash".to_string());
+            return;
+        };
+        self.prompt = Some(Prompt::ConfirmTrash {
+            path: path.to_path_buf(),
+        });
+    }
+
+    fn file_path_key(
+        &mut self,
+        key: KeyEvent,
+        kind: FilePathKind,
+        mut input: String,
+        mut cursor: usize,
+    ) {
+        match key.code {
+            KeyCode::Esc => {
+                self.status = Some("File operation cancelled".to_string());
+                return;
+            }
+            KeyCode::Enter => {
+                self.confirm_file_path(kind, &input);
+                return;
+            }
+            _ => {
+                edit_line(key, &mut input, &mut cursor);
+            }
+        }
+        self.prompt = Some(Prompt::FilePath {
+            kind,
+            input,
+            cursor,
+            error: None,
+        });
+    }
+
+    fn confirm_file_path(&mut self, kind: FilePathKind, input: &str) {
+        let path = match resolve_save_path(input) {
+            Ok(path) => path,
+            Err(error) => {
+                self.reopen_file_path(kind, input, format!("invalid name: {error}"));
+                return;
+            }
+        };
+        let result = match kind {
+            FilePathKind::Open if !path.is_file() => {
+                Err(anyhow::anyhow!("{} is not a file", path.display()))
+            }
+            FilePathKind::Open => self.open_file_path(path.clone()),
+            FilePathKind::Rename if self.buffer.path() == Some(path.as_path()) => {
+                self.status = Some("File name unchanged".to_string());
+                return;
+            }
+            FilePathKind::Rename if path.exists() => {
+                Err(anyhow::anyhow!("{} already exists", path.display()))
+            }
+            FilePathKind::Rename => self.rename_file_path(path.clone()),
+        };
+        match result {
+            Ok(()) => {
+                if self.prompt.is_none() {
+                    self.status = Some(match kind {
+                        FilePathKind::Open => format!("Opened {}", path.display()),
+                        FilePathKind::Rename => format!("Renamed to {}", path.display()),
+                    });
+                }
+            }
+            Err(error) => self.reopen_file_path(kind, input, format!("Error: {error}")),
+        }
+    }
+
+    fn reopen_file_path(&mut self, kind: FilePathKind, input: &str, error: String) {
+        self.prompt = Some(Prompt::FilePath {
+            kind,
+            input: input.to_string(),
+            cursor: input.len(),
+            error: Some(error),
+        });
+    }
+
+    fn confirm_trash_key(&mut self, key: KeyEvent, path: PathBuf) {
+        match key.code {
+            KeyCode::Char('y') | KeyCode::Char('Y') => {
+                if let Err(error) = self.trash_current_file() {
+                    self.status = Some(format!("Could not move file to trash: {error}"));
+                }
+            }
+            KeyCode::Char('n') | KeyCode::Char('N') | KeyCode::Esc => {
+                self.status = Some("Trash cancelled".to_string());
+            }
+            _ => self.prompt = Some(Prompt::ConfirmTrash { path }),
+        }
     }
 
     fn external_url_key(&mut self, key: KeyEvent, url: String) {
