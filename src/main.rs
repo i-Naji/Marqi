@@ -22,7 +22,7 @@ mod ui;
 mod view;
 
 use std::env;
-use std::io::{IsTerminal, Read};
+use std::io::{IsTerminal, Read, Write};
 use std::path::PathBuf;
 
 use anyhow::{Context, Result};
@@ -41,10 +41,12 @@ marqi — a live-preview terminal markdown editor
 USAGE:
     marqi [OPTIONS] [FILE]    Open FILE (or a new buffer if omitted)
     curl -s URL | marqi       Edit markdown piped on stdin
-    marqi -r FILE             Render FILE to stdout
+    marqi -r FILE             Render FILE (or - for stdin) to stdout
 
 OPTIONS:
     -r, --render              Render instead of opening the editor
+    --width COLUMNS           Set plain-text render width
+    --html                    Render HTML instead of plain text
     -c, --config PATH         Load a config.toml (or DIR containing one)
     --                        Treat every following argument as a filename
     -h, --help                Show this help
@@ -69,7 +71,9 @@ fn main() -> Result<()> {
             println!("marqi {}", env!("CARGO_PKG_VERSION"));
             return Ok(());
         }
-        Action::Render(path) => return render_to_stdout(&path, cli.config_path.as_deref()),
+        Action::Render(options) => {
+            return render_to_stdout(&options, cli.config_path.as_deref());
+        }
         Action::Edit(path) => run_editor(path, cli.config_path)?,
     }
 
@@ -125,11 +129,23 @@ fn run_editor(path: Option<String>, config_path: Option<PathBuf>) -> Result<()> 
     result.and(restored)
 }
 
-/// Render a file's markdown preview to stdout as plain text (no TTY needed).
-fn render_to_stdout(path: &str, config_path: Option<&std::path::Path>) -> Result<()> {
+/// Render markdown to stdout without requiring a TTY.
+fn render_to_stdout(options: &RenderOptions, config_path: Option<&std::path::Path>) -> Result<()> {
     use markdown::{CodeHighlighter, MarkdownTheme, render_preview};
 
-    let source = std::fs::read_to_string(path)?;
+    let source = if options.path == "-" {
+        let mut source = String::new();
+        std::io::stdin().read_to_string(&mut source)?;
+        source
+    } else {
+        std::fs::read_to_string(&options.path)
+            .with_context(|| format!("reading {}", options.path))?
+    };
+    if options.html {
+        let html = comrak::markdown_to_html(&source, &markdown::gfm_options());
+        std::io::stdout().write_all(html.as_bytes())?;
+        return Ok(());
+    }
     let (cfg, warning) = load_config(config_path);
     if let Some(warning) = warning {
         eprintln!("{warning}");
@@ -144,12 +160,15 @@ fn render_to_stdout(path: &str, config_path: Option<&std::path::Path>) -> Result
         .as_deref()
         .unwrap_or_else(|| theme.default_syntax_theme());
     let highlighter = CodeHighlighter::new(Some(syntax));
-    let width = crossterm::terminal::size()
-        .map(|(w, _)| w as usize)
-        .unwrap_or(80);
+    let width = options.width.unwrap_or_else(|| {
+        crossterm::terminal::size()
+            .map(|(w, _)| w as usize)
+            .unwrap_or(80)
+    });
+    let mut output = std::io::BufWriter::new(std::io::stdout().lock());
     for line in render_preview(&source, width, &theme, &highlighter) {
         let text: String = line.spans.iter().map(|s| s.content.as_ref()).collect();
-        println!("{text}");
+        writeln!(output, "{text}")?;
     }
     Ok(())
 }
@@ -170,7 +189,13 @@ enum Action {
     Help,
     Version,
     Edit(Option<String>),
-    Render(String),
+    Render(RenderOptions),
+}
+
+struct RenderOptions {
+    path: String,
+    width: Option<usize>,
+    html: bool,
 }
 
 impl Cli {
@@ -178,6 +203,8 @@ impl Cli {
         let mut args = args.into_iter();
         let mut config_path = None;
         let mut render = false;
+        let mut render_width = None;
+        let mut render_html = false;
         let mut file = None;
 
         let mut positional = |arg: String| -> Result<()> {
@@ -202,6 +229,18 @@ impl Cli {
                     });
                 }
                 "-r" | "--render" => render = true,
+                "--width" => {
+                    let value = args
+                        .next()
+                        .context("usage: marqi -r FILE --width COLUMNS")?;
+                    let width = value
+                        .parse::<usize>()
+                        .ok()
+                        .filter(|width| *width > 0)
+                        .context("render width must be a positive integer")?;
+                    render_width = Some(width);
+                }
+                "--html" => render_html = true,
                 "-c" | "--config" => {
                     let path = args
                         .next()
@@ -215,14 +254,25 @@ impl Cli {
                         positional(rest)?;
                     }
                 }
+                "-" => positional(arg)?,
                 _ if arg.starts_with('-') => anyhow::bail!("unknown option: {arg}\n\n{HELP}"),
                 _ => positional(arg)?,
             }
         }
 
         let action = if render {
-            Action::Render(file.context("usage: marqi -r <file>")?)
+            Action::Render(RenderOptions {
+                path: file.context("usage: marqi -r <file or ->")?,
+                width: render_width,
+                html: render_html,
+            })
         } else {
+            if render_width.is_some() || render_html {
+                anyhow::bail!("--width and --html require --render");
+            }
+            if file.as_deref() == Some("-") {
+                anyhow::bail!("- is only supported with --render");
+            }
             Action::Edit(file)
         };
 
@@ -282,7 +332,7 @@ mod tests {
         let cli = parse(&["-c", "cfg", "-r", "doc.md"]);
         assert_eq!(cli.config_path, Some(PathBuf::from("cfg")));
         match cli.action {
-            Action::Render(path) => assert_eq!(path, "doc.md"),
+            Action::Render(options) => assert_eq!(options.path, "doc.md"),
             _ => panic!("expected render action"),
         }
     }
@@ -292,7 +342,7 @@ mod tests {
         let cli = parse(&["-r", "-c", "cfg", "doc.md"]);
         assert_eq!(cli.config_path, Some(PathBuf::from("cfg")));
         match cli.action {
-            Action::Render(path) => assert_eq!(path, "doc.md"),
+            Action::Render(options) => assert_eq!(options.path, "doc.md"),
             _ => panic!("expected render action"),
         }
     }
@@ -321,6 +371,25 @@ mod tests {
     #[test]
     fn extra_render_file_is_an_error() {
         assert!(Cli::parse(["-r", "a.md", "b.md"].map(String::from)).is_err());
+    }
+
+    #[test]
+    fn parses_render_stdin_width_and_html() {
+        let cli = parse(&["--render", "-", "--width", "42", "--html"]);
+        match cli.action {
+            Action::Render(options) => {
+                assert_eq!(options.path, "-");
+                assert_eq!(options.width, Some(42));
+                assert!(options.html);
+            }
+            _ => panic!("expected render action"),
+        }
+    }
+
+    #[test]
+    fn render_options_require_render_mode_and_valid_width() {
+        assert!(Cli::parse(["--width", "0", "doc.md"].map(String::from)).is_err());
+        assert!(Cli::parse(["--html", "doc.md"].map(String::from)).is_err());
     }
 
     #[test]
