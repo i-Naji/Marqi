@@ -36,10 +36,11 @@ pub enum Action {
     OpenFile,
     RenameFile,
     TrashFile,
+    FormatTable,
 }
 
 impl Action {
-    pub const ALL: [Self; 33] = [
+    pub const ALL: [Self; 34] = [
         Self::Save,
         Self::SaveAs,
         Self::Find,
@@ -66,6 +67,7 @@ impl Action {
         Self::OpenFile,
         Self::RenameFile,
         Self::TrashFile,
+        Self::FormatTable,
         Self::TogglePreview,
         Self::ToggleRaw,
         Self::ToggleTable,
@@ -111,6 +113,7 @@ impl Action {
             Self::OpenFile => "Open file",
             Self::RenameFile => "Rename file",
             Self::TrashFile => "Move file to trash",
+            Self::FormatTable => "Format Markdown table",
         }
     }
 
@@ -147,6 +150,7 @@ impl Action {
             Self::ToggleStats => "",
             Self::RecentFiles => "",
             Self::NewFile | Self::OpenFile | Self::RenameFile | Self::TrashFile => "",
+            Self::FormatTable => "",
         }
     }
 }
@@ -170,6 +174,7 @@ impl App {
             | Action::ToggleQuote
             | Action::ToggleBullet => !self.mode.is_read(),
             Action::ToggleTask => !self.mode.is_read(),
+            Action::FormatTable => !self.mode.is_read(),
             Action::Outline => true,
             Action::FollowLink => !self.mode.is_read(),
             Action::ToggleStats => true,
@@ -221,6 +226,7 @@ impl App {
             Action::OpenFile => self.open_file_prompt(),
             Action::RenameFile => self.rename_file_prompt(),
             Action::TrashFile => self.trash_file_prompt(),
+            Action::FormatTable => self.format_table(),
         }
     }
 }

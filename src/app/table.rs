@@ -1,4 +1,5 @@
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+use unicode_width::UnicodeWidthStr;
 
 use super::App;
 
@@ -8,6 +9,115 @@ struct TableInfo {
     separator_line: usize,
     end_line: usize,
     columns: usize,
+}
+
+struct ParsedRow {
+    indent: String,
+    cells: Vec<String>,
+    leading_pipe: bool,
+    trailing_pipe: bool,
+    eol: String,
+}
+
+impl ParsedRow {
+    fn new(source: &str) -> Self {
+        let body_len = source.trim_end_matches(['\r', '\n']).len();
+        let (body, eol) = source.split_at(body_len);
+        let indent_len = body
+            .bytes()
+            .take_while(|byte| matches!(byte, b' ' | b'\t'))
+            .count();
+        let table = body[indent_len..].trim_end();
+        let pipes = pipe_positions(table);
+        let leading_pipe = pipes.first() == Some(&0);
+        let trailing_pipe = pipes.last() == Some(&table.len().saturating_sub(1)) && table.len() > 1;
+        let mut inner = table;
+        if leading_pipe {
+            inner = &inner[1..];
+        }
+        if trailing_pipe {
+            inner = &inner[..inner.len() - 1];
+        }
+        Self {
+            indent: body[..indent_len].to_string(),
+            cells: split_table_cells(inner)
+                .into_iter()
+                .map(|cell| cell.trim().to_string())
+                .collect(),
+            leading_pipe,
+            trailing_pipe,
+            eol: eol.to_string(),
+        }
+    }
+
+    fn format(&self, widths: &[usize], separator: bool) -> String {
+        let mut output = self.indent.clone();
+        if self.leading_pipe {
+            output.push('|');
+        }
+        for (column, width) in widths.iter().copied().enumerate() {
+            if self.leading_pipe || column > 0 {
+                output.push(' ');
+            }
+            let source = self.cells.get(column).map_or("", String::as_str);
+            let cell = if separator {
+                separator_cell(source, width)
+            } else {
+                let padding = width.saturating_sub(UnicodeWidthStr::width(source));
+                format!("{source}{}", " ".repeat(padding))
+            };
+            output.push_str(&cell);
+            if column + 1 < widths.len() || self.trailing_pipe {
+                output.push(' ');
+                output.push('|');
+            }
+        }
+        output.push_str(&self.eol);
+        output
+    }
+}
+
+fn separator_cell(source: &str, width: usize) -> String {
+    let source = source.trim();
+    let left = source.starts_with(':');
+    let right = source.ends_with(':');
+    let dashes = width.saturating_sub(usize::from(left) + usize::from(right));
+    format!(
+        "{}{}{}",
+        if left { ":" } else { "" },
+        "-".repeat(dashes),
+        if right { ":" } else { "" }
+    )
+}
+
+fn pipe_positions(text: &str) -> Vec<usize> {
+    let bytes = text.as_bytes();
+    bytes
+        .iter()
+        .enumerate()
+        .filter_map(|(index, byte)| {
+            if *byte != b'|' {
+                return None;
+            }
+            let slashes = bytes[..index]
+                .iter()
+                .rev()
+                .take_while(|byte| **byte == b'\\')
+                .count();
+            slashes.is_multiple_of(2).then_some(index)
+        })
+        .collect()
+}
+
+fn split_table_cells(text: &str) -> Vec<String> {
+    let mut cells = Vec::new();
+    let mut start = 0;
+    for pipe in pipe_positions(text) {
+        cells.push(text[start..pipe].to_string());
+        start = pipe + 1;
+    }
+    cells.push(text[start..].to_string());
+    cells
 }
 
 impl App {
@@ -23,6 +133,49 @@ impl App {
             self.table_mode = false;
             self.status = Some("No table at cursor".to_string());
         }
+    }
+
+    pub(super) fn format_table(&mut self) {
+        let Some(info) = self.table_at_cursor() else {
+            self.status = Some("No table at cursor".to_string());
+            return;
+        };
+        let rows: Vec<ParsedRow> = (info.start_line..=info.end_line)
+            .map(|line| {
+                let (start, end) = self.line_range(line);
+                ParsedRow::new(&self.buffer.slice(start, end))
+            })
+            .collect();
+        let columns = rows.iter().map(|row| row.cells.len()).max().unwrap_or(0);
+        if columns == 0 {
+            self.status = Some("No table at cursor".to_string());
+            return;
+        }
+        let mut widths = vec![3; columns];
+        for (row_index, row) in rows.iter().enumerate() {
+            for (column, cell) in row.cells.iter().enumerate() {
+                if info.start_line + row_index != info.separator_line {
+                    widths[column] = widths[column].max(UnicodeWidthStr::width(cell.as_str()));
+                }
+            }
+        }
+        let mut replacement = String::new();
+        for (row_index, row) in rows.iter().enumerate() {
+            replacement
+                .push_str(&row.format(&widths, info.start_line + row_index == info.separator_line));
+        }
+        let start = self.buffer.rope().line_to_byte(info.start_line);
+        let end = self.line_range(info.end_line).1;
+        let cursor = start
+            + self
+                .cursor
+                .byte
+                .saturating_sub(start)
+                .min(replacement.len());
+        self.history.break_run();
+        self.replace_range_with_cursor(start, end, &replacement, Some(cursor));
+        self.history.break_run();
+        self.status = Some("Table formatted".to_string());
     }
 
     pub(super) fn handle_table_key(&mut self, key: KeyEvent, ctrl: bool) -> bool {
@@ -87,10 +240,10 @@ impl App {
         }
 
         let separator_line = (start + 1..=end).find(|line| self.is_separator_line(*line))?;
-        let columns = self
-            .table_cells_text(start)
-            .len()
-            .max(self.table_cells_text(separator_line).len());
+        let columns = (start..=end)
+            .map(|line| self.table_cells_text(line).len())
+            .max()
+            .unwrap_or(0);
         (columns > 0).then_some(TableInfo {
             start_line: start,
             separator_line,
@@ -116,16 +269,10 @@ impl App {
 
     fn table_cells_text(&self, line: usize) -> Vec<String> {
         let text = self.line_without_eol(line);
-        let trimmed = text.trim();
-        if trimmed.is_empty() || !trimmed.contains('|') {
+        if text.trim().is_empty() || !text.contains('|') {
             return Vec::new();
         }
-        let inner = trimmed
-            .strip_prefix('|')
-            .unwrap_or(trimmed)
-            .strip_suffix('|')
-            .unwrap_or_else(|| trimmed.strip_prefix('|').unwrap_or(trimmed));
-        inner.split('|').map(|s| s.to_string()).collect()
+        ParsedRow::new(&text).cells
     }
 
     /// Byte ranges of the cells on `line`, as offsets into the full
@@ -136,18 +283,13 @@ impl App {
         let text = self.line_without_eol(line);
         let indent = text.len() - text.trim_start().len();
         let trimmed = text.trim();
-        let bytes = trimmed.as_bytes();
-        let pipes: Vec<usize> = bytes
-            .iter()
-            .enumerate()
-            .filter_map(|(i, b)| (*b == b'|').then_some(i))
-            .collect();
+        let pipes = pipe_positions(trimmed);
         if pipes.is_empty() {
             return Vec::new();
         }
 
-        let starts_with_pipe = bytes.first() == Some(&b'|');
-        let ends_with_pipe = bytes.last() == Some(&b'|');
+        let starts_with_pipe = pipes.first() == Some(&0);
+        let ends_with_pipe = pipes.last() == Some(&trimmed.len().saturating_sub(1));
         let mut bounds = Vec::new();
         let mut start = if starts_with_pipe { pipes[0] + 1 } else { 0 };
         let first_pipe = usize::from(starts_with_pipe);

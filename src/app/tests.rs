@@ -899,6 +899,22 @@ fn table_mode_protects_header_and_moves_data_rows() {
 }
 
 #[test]
+fn table_formatter_aligns_cells_and_preserves_escaped_pipes() {
+    let source = "  | Name | Note |\r\n  |:--|---:|\r\n  | Ada| a \\| b|\r\n";
+    let mut a = app_with(source);
+    a.cursor.byte = source.find("Ada").unwrap();
+
+    a.run_action(Action::FormatTable);
+
+    assert_eq!(
+        a.buffer.rope().to_string(),
+        "  | Name | Note   |\r\n  | :--- | -----: |\r\n  | Ada  | a \\| b |\r\n"
+    );
+    a.run_action(Action::Undo);
+    assert_eq!(a.buffer.rope().to_string(), source);
+}
+
+#[test]
 fn save_as_prompts_for_a_name_then_writes_atomically() {
     let mut a = app();
     type_str(&mut a, "hello world");
