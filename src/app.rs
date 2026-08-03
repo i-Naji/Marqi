@@ -25,6 +25,7 @@ use crate::text::{next_grapheme, prev_grapheme};
 use crate::view::{self, HybridView, PreviewView, ViewCache};
 
 mod action;
+mod diagnostics;
 mod file_ops;
 mod formatting;
 mod menu;
@@ -174,6 +175,7 @@ pub struct App {
     menu: Option<menu::Menu>,
     palette: Option<palette::Palette>,
     outline: Option<outline::Outline>,
+    diagnostics: Option<diagnostics::Diagnostics>,
     recent_picker: Option<session::RecentPicker>,
     recent_files: Vec<session::RecentFile>,
     cursor_shape: CursorShape,
@@ -286,6 +288,7 @@ impl App {
             menu: None,
             palette: None,
             outline: None,
+            diagnostics: None,
             recent_picker: None,
             recent_files: Vec::new(),
             cursor_shape: CursorShape::Block,
@@ -606,6 +609,11 @@ impl App {
 
         if self.outline.is_some() {
             self.handle_outline_key(key);
+            return;
+        }
+
+        if self.diagnostics.is_some() {
+            self.handle_diagnostics_key(key);
             return;
         }
 
@@ -1187,7 +1195,11 @@ impl App {
     /// Wheel scrolling moves the viewport freely; the cursor stays put and the
     /// view stops following it until the next keypress or click.
     fn scroll_wheel(&mut self, delta: isize) {
-        if self.palette.is_some() || self.outline.is_some() || self.recent_picker.is_some() {
+        if self.palette.is_some()
+            || self.outline.is_some()
+            || self.diagnostics.is_some()
+            || self.recent_picker.is_some()
+        {
             return;
         }
         if let Some(menu) = self.menu.as_mut() {
@@ -1228,6 +1240,7 @@ impl App {
         if self.menu.is_some()
             || self.palette.is_some()
             || self.outline.is_some()
+            || self.diagnostics.is_some()
             || self.recent_picker.is_some()
             || self.mode.is_read()
             || y as usize >= self.viewport_height
@@ -1284,6 +1297,7 @@ impl App {
         if self.menu.is_some()
             || self.palette.is_some()
             || self.outline.is_some()
+            || self.diagnostics.is_some()
             || self.recent_picker.is_some()
             || self.mode.is_read()
             || y as usize >= self.viewport_height

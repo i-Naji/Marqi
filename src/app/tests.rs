@@ -164,6 +164,21 @@ fn outline_filters_headings_and_jumps_to_source() {
 }
 
 #[test]
+fn diagnostics_open_from_an_action_and_jump_to_the_issue() {
+    let mut a = app_with("# Same\ntext\n# Same\n");
+
+    a.run_action(Action::Diagnostics);
+    assert!(a.diagnostics_open());
+    let items = a.diagnostic_items();
+    assert_eq!(items.len(), 1);
+    assert_eq!(items[0].line, 2);
+
+    press(&mut a, KeyCode::Enter);
+    assert!(!a.diagnostics_open());
+    assert_eq!(a.cursor_line_col().0, 3);
+}
+
+#[test]
 fn follow_link_resolves_references_and_confirms_external_urls() {
     let mut a = app_with("See [site][docs].\n\n[docs]: https://example.com\n");
     a.cursor.byte = 6;

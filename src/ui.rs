@@ -91,6 +91,7 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
             && !app.menu_open()
             && !app.palette_open()
             && !app.outline_open()
+            && !app.diagnostics_open()
             && !app.recent_picker_open()
             && let Some(pos) = cursor_position(app, content_area)
         {
@@ -129,6 +130,9 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
     }
     if app.outline_open() {
         draw_outline(frame, app, editor_area);
+    }
+    if app.diagnostics_open() {
+        draw_diagnostics(frame, app, editor_area);
     }
     if app.recent_picker_open() {
         draw_recent_files(frame, app, editor_area);
@@ -187,6 +191,8 @@ fn build_status(app: &App, width: usize) -> Line<'static> {
                 "↑↓ move · type to filter · ⏎ run · esc close ".to_string()
             } else if app.outline_open() {
                 "↑↓ move · type to filter · ⏎ jump · esc close ".to_string()
+            } else if app.diagnostics_open() {
+                "↑↓ move · ⏎ jump · esc close ".to_string()
             } else if app.recent_picker_open() {
                 "↑↓ move · type to filter · ⏎ open · esc close ".to_string()
             } else if app.mode.is_read() {
@@ -239,6 +245,9 @@ fn mode_badge(app: &App) -> (&'static str, ratatui::style::Color) {
     }
     if app.outline_open() {
         return ("OUTLINE", rgb(0x9e, 0xce, 0x6a));
+    }
+    if app.diagnostics_open() {
+        return ("ISSUES", rgb(0xf7, 0x76, 0x8e));
     }
     if app.palette_open() {
         return ("COMMAND", rgb(0xbb, 0x9a, 0xf7));
@@ -800,6 +809,46 @@ fn draw_recent_files(frame: &mut Frame, app: &App, area: Rect) {
             style,
         )));
     }
+    frame.render_widget(Paragraph::new(lines).style(theme.text), inner);
+}
+
+fn draw_diagnostics(frame: &mut Frame, app: &App, area: Rect) {
+    let theme = app.theme();
+    let items = app.diagnostic_items();
+    let width = 76.min(area.width.saturating_sub(2).max(1));
+    let height = (items.len() as u16 + 2).min(area.height.saturating_sub(1).max(1));
+    let popup = Rect::new(
+        area.x + area.width.saturating_sub(width) / 2,
+        area.y + area.height.saturating_sub(height) / 3,
+        width,
+        height,
+    );
+
+    frame.render_widget(Clear, popup);
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_type(BorderType::Rounded)
+        .title(Span::styled(" Markdown diagnostics ", theme.heading(2)))
+        .style(theme.text.bg(theme.help_background));
+    let inner = block.inner(popup);
+    frame.render_widget(block, popup);
+
+    let lines = items
+        .into_iter()
+        .take(inner.height as usize)
+        .map(|item| {
+            let style = if item.selected {
+                theme.text.bg(theme.selection)
+            } else {
+                theme.text
+            };
+            let mark = if item.selected { "▸" } else { " " };
+            Line::from(Span::styled(
+                format!("{mark} L{}  {}", item.line + 1, item.message),
+                style,
+            ))
+        })
+        .collect::<Vec<_>>();
     frame.render_widget(Paragraph::new(lines).style(theme.text), inner);
 }
 
