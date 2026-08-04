@@ -22,7 +22,7 @@ anyhow = "1.0.104"
 # `wayland-data-control` keeps the clipboard native on XWayland-free sessions;
 # default features are off to skip image-data support we don't use.
 arboard = { version = "3.6.1", default-features = false, features = ["wayland-data-control"] }
-comrak = "0.52.0"
+comrak = "0.54.0"
 crossterm = "0.29.0"
 directories = "6.0.0"
 # 0.30.2 minimum: its buffer diff repaints the trailing cells of wide glyphs
