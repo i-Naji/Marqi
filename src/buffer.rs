@@ -492,6 +492,19 @@ mod tests {
     }
 
     #[test]
+    fn save_detects_a_deleted_file() {
+        let path = temp_path("external_delete");
+        fs::write(&path, "original").unwrap();
+        let mut buf = TextBuffer::from_path(&path).unwrap();
+        buf.insert(0, "local ");
+        fs::remove_file(&path).unwrap();
+
+        assert!(buf.has_external_change().unwrap());
+        assert!(buf.save().is_err());
+        assert!(!path.exists());
+    }
+
+    #[test]
     fn missing_path_yields_empty_named_buffer() {
         let path = temp_path("missing_xyz");
         fs::remove_file(&path).ok();

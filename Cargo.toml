@@ -42,6 +42,9 @@ trash = "5.2.6"
 unicode-segmentation = "1.13.3"
 unicode-width = "0.2.2"
 
+[dev-dependencies]
+libc = "0.2.189"
+
 # Optimized, slim binaries for distribution. Unwinding is kept (not `panic =
 # "abort"`) so the panic hook in tui.rs can restore the terminal on a crash.
 [profile.release]

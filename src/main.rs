@@ -115,6 +115,10 @@ fn run_editor(path: Option<String>, config_path: Option<PathBuf>) -> Result<()> 
     }
 
     let mut terminal = tui::init()?;
+    #[cfg(debug_assertions)]
+    if std::env::var_os("MARQI_TEST_PANIC_AFTER_INIT").is_some() {
+        panic!("requested terminal cleanup probe");
+    }
     let result = run(&mut terminal, &mut app);
     let session_error = app.save_session().err();
     // Restore the terminal even if the run loop errored. A run-loop error is

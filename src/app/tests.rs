@@ -1893,6 +1893,23 @@ fn incremental_view_matches_a_fresh_app_after_edits_and_undo() {
     assert_matches_fresh_app(&mut a);
 }
 
+#[test]
+fn large_document_navigation_stays_consistent() {
+    let src = crate::testdoc::many_blocks(2_000);
+    let mut a = app_with(&src);
+    a.set_viewport(100, 40);
+    let target = src.find("Paragraph 1993").unwrap();
+    a.cursor.byte = target;
+    a.scroll_to_cursor();
+
+    let rows = a.visible_rows();
+    assert!(!rows.lines.is_empty());
+    assert!(a.scroll_y > 0);
+    type_str(&mut a, "updated ");
+    a.set_viewport(50, 15);
+    assert_matches_fresh_app(&mut a);
+}
+
 /// Manual perf probe, not a CI test:
 /// `cargo test --release perf_probe -- --ignored --nocapture`
 #[test]
