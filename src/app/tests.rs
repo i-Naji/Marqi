@@ -950,6 +950,23 @@ fn table_formatter_aligns_cells_and_preserves_escaped_pipes() {
 }
 
 #[test]
+fn table_format_keeps_cursor_on_a_char_boundary() {
+    let mut a = app_with("|中|b|\n|-|-|\n");
+    a.cursor.byte = "|中".len();
+    a.run_action(Action::FormatTable);
+    assert!(a.buffer.rope().to_string().is_char_boundary(a.cursor.byte));
+}
+
+#[test]
+fn heading_cycle_keeps_cursor_on_a_char_boundary() {
+    let mut a = app_with("# 中b\n");
+    a.cursor.byte = "# 中".len();
+    a.run_action(Action::CycleHeading);
+    assert_eq!(a.buffer.rope().to_string(), "## 中b\n");
+    assert!(a.buffer.rope().to_string().is_char_boundary(a.cursor.byte));
+}
+
+#[test]
 fn save_as_prompts_for_a_name_then_writes_atomically() {
     let mut a = app();
     type_str(&mut a, "hello world");

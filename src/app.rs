@@ -57,6 +57,14 @@ fn ctrl_like(modifiers: KeyModifiers) -> bool {
     modifiers.contains(KeyModifiers::CONTROL) || modifiers.contains(KeyModifiers::SUPER)
 }
 
+fn floor_char_boundary(text: &str, mut offset: usize) -> usize {
+    offset = offset.min(text.len());
+    while !text.is_char_boundary(offset) {
+        offset -= 1;
+    }
+    offset
+}
+
 /// The editor's input mode. Standard/nano/emacs rest in `Insert`; vim rests in
 /// `Normal` and adds `Visual`; `Read` is the scroll-only rendered preview (^P).
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]

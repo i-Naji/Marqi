@@ -48,12 +48,12 @@ impl App {
         } else {
             format!("{indent}{prefix}{content}{eol}")
         };
+        let body_len = replacement.trim_end_matches(['\r', '\n']).len();
         let cursor = start
-            + self
-                .cursor
-                .byte
-                .saturating_sub(start)
-                .min(replacement.trim_end_matches(['\r', '\n']).len());
+            + super::floor_char_boundary(
+                &replacement,
+                self.cursor.byte.saturating_sub(start).min(body_len),
+            );
         self.history.break_run();
         self.replace_range_with_cursor(start, end, &replacement, Some(cursor));
         self.history.break_run();
@@ -87,12 +87,12 @@ impl App {
         } else {
             format!("{indent}{} {text}{eol}", "#".repeat(next))
         };
+        let body_len = replacement.trim_end_matches(['\r', '\n']).len();
         let cursor = start
-            + self
-                .cursor
-                .byte
-                .saturating_sub(start)
-                .min(replacement.trim_end_matches(['\r', '\n']).len());
+            + super::floor_char_boundary(
+                &replacement,
+                self.cursor.byte.saturating_sub(start).min(body_len),
+            );
         self.history.break_run();
         self.replace_range_with_cursor(start, end, &replacement, Some(cursor));
         self.history.break_run();
