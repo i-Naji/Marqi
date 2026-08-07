@@ -248,7 +248,7 @@ fn cells(line: &str) -> Vec<&str> {
     let trimmed = line.trim();
     let pipes = pipe_positions(trimmed);
     let leading = pipes.first() == Some(&0);
-    let trailing = pipes.last() == Some(&trimmed.len().saturating_sub(1));
+    let trailing = pipes.last() == Some(&trimmed.len().saturating_sub(1)) && trimmed.len() > 1;
     let start = usize::from(leading);
     let end = trimmed.len().saturating_sub(usize::from(trailing));
     let inner = &trimmed[start..end];
@@ -347,5 +347,12 @@ mod tests {
                 .any(|item| item.message.contains("Malformed table"))
         );
         assert!(items.iter().any(|item| item.message.contains("Unmatched")));
+    }
+
+    #[test]
+    fn tolerates_bare_pipe_lines() {
+        diagnose("|\n| x |\n");
+        diagnose("|\n|\n");
+        diagnose("  |  \n| a | b |\n");
     }
 }
