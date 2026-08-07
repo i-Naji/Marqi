@@ -155,7 +155,7 @@ impl App {
                 })
             }
             Prompt::Recovery { error } => {
-                let message = "Unsaved recovery found — r restore · d discard";
+                let message = "Unsaved recovery found — r restore · d discard · esc later";
                 Some(PromptView {
                     text: error.as_ref().map_or_else(
                         || message.to_string(),
@@ -327,7 +327,8 @@ impl App {
                     });
                 }
             },
-            KeyCode::Char('d') | KeyCode::Char('D') | KeyCode::Esc => {
+            KeyCode::Esc => {}
+            KeyCode::Char('d') | KeyCode::Char('D') => {
                 match self.buffer.discard_recovery() {
                     Ok(()) => {
                         self.recovery_content = None;
