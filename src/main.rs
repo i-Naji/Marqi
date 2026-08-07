@@ -53,7 +53,7 @@ OPTIONS:
     -V, --version             Show version
 
 KEYS:
-    ^S save · ^Q quit · ^F find · ^P preview · ^L switch preset
+    ^S save · ^Q quit · ^F find · ^P preview · ^⇧P commands
     Press ^G inside the editor for the full, scrollable reference.
 
 CONFIG (optional): ~/.config/marqi/config.toml — see marqi.example.toml

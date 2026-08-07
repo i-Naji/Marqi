@@ -4,6 +4,8 @@
 #   %APPDATA%\marqi\config\config.toml                 (Windows)
 # Every field is optional; omitted ones use the defaults shown here.
 # Unknown keys and unrecognised values show a warning in the status bar.
+# Settings changed in-app are session-only unless "Save defaults" is selected;
+# Marqi never rewrites this file implicitly.
 
 [editor]
 # Keybinding preset: "standard" (default), "vim", "nano", or "emacs".
@@ -15,10 +17,10 @@ heading_glyphs = true
 # How a single source newline renders in the preview: "space" (markdown reflow,
 # the default) or "break" (a visible line break, Obsidian-style).
 soft_break = "space"
-# Save automatically ~2 seconds after the last edit. Applies only to buffers
-# that already have a filename (an unnamed buffer never pops a prompt at you).
+# Save automatically ~2 seconds after the last edit. Applies only to named
+# buffers, backs off after errors, and pauses if the file changed on disk.
 auto_save = false
-# Show words, characters, selection size, and estimated reading time.
+# Show word, character, selection, and estimated reading-time statistics.
 status_stats = false
 # Blank columns between the terminal's left edge and the editor content.
 # 0 or any positive number; 0 starts text flush at the edge.
