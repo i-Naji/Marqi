@@ -83,8 +83,12 @@ impl App {
                         m.orig_line_numbers,
                     )
                 };
-                self.apply_theme_runtime(theme, variant);
-                self.set_preset(preset);
+                if self.theme.name != theme || self.theme.variant != variant {
+                    self.apply_theme_runtime(theme, variant);
+                }
+                if self.preset != preset {
+                    self.set_preset(preset);
+                }
                 self.line_numbers = line_numbers;
                 self.status = None;
                 self.menu = None;

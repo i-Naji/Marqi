@@ -680,6 +680,26 @@ fn menu_switches_theme_appearance_and_preset_live_with_esc_revert() {
 }
 
 #[test]
+fn cancelling_settings_preserves_selection() {
+    let mut a = app_with("hello world");
+    press(&mut a, KeyCode::Home);
+    for _ in 0..5 {
+        press_mod(&mut a, KeyCode::Right, KeyModifiers::SHIFT);
+    }
+    assert_eq!(a.selection_range(), Some((0, 5)));
+
+    press_mod(&mut a, KeyCode::Char('g'), KeyModifiers::CONTROL);
+    assert!(a.menu_open());
+    press(&mut a, KeyCode::Esc);
+    assert!(!a.menu_open());
+    assert_eq!(
+        a.selection_range(),
+        Some((0, 5)),
+        "Esc-cancel keeps the selection"
+    );
+}
+
+#[test]
 fn menu_edits_line_numbers_live_with_esc_revert() {
     let mut a = app_with("# Title\n\nbody\n");
     assert_eq!(a.line_numbers(), LineNumbers::Off);
