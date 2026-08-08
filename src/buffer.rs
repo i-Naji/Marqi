@@ -8,7 +8,6 @@
 use std::fs;
 use std::io::{BufWriter, Write};
 use std::path::{Path, PathBuf};
-use std::time::SystemTime;
 
 use anyhow::{Context, Result};
 use ropey::Rope;
@@ -37,7 +36,6 @@ enum DiskState {
 #[derive(Clone, Copy, PartialEq, Eq)]
 struct DiskFingerprint {
     len: u64,
-    modified: Option<SystemTime>,
     hash: u64,
 }
 
@@ -154,11 +152,11 @@ impl TextBuffer {
     /// mistyped path does not bind the buffer to an unwritable destination.
     pub fn save_as(&mut self, path: PathBuf) -> Result<()> {
         write_atomic(&path, &self.rope).with_context(|| format!("saving {}", path.display()))?;
+        let _ = self.discard_recovery();
         self.disk_state = fingerprint_from_disk(&path)?;
         self.path = Some(path);
         self.name = None;
         self.modified = false;
-        let _ = self.discard_recovery();
         Ok(())
     }
 
@@ -330,7 +328,6 @@ fn fingerprint(path: &Path, bytes: &[u8]) -> Result<DiskState> {
     let metadata = fs::metadata(path).with_context(|| format!("reading {}", path.display()))?;
     Ok(DiskState::Present(DiskFingerprint {
         len: metadata.len(),
-        modified: metadata.modified().ok(),
         hash: stable_hash(bytes),
     }))
 }
@@ -487,6 +484,18 @@ mod tests {
 
         buf.save_force().unwrap();
         assert_eq!(fs::read_to_string(&path).unwrap(), "local original");
+        assert!(!buf.has_external_change().unwrap());
+        fs::remove_file(&path).ok();
+    }
+
+    #[test]
+    fn touch_without_content_change_is_not_external() {
+        let path = temp_path("external_touch");
+        fs::write(&path, "same").unwrap();
+        let buf = TextBuffer::from_path(&path).unwrap();
+        let file = fs::OpenOptions::new().write(true).open(&path).unwrap();
+        file.set_modified(std::time::SystemTime::now() + std::time::Duration::from_secs(120))
+            .unwrap();
         assert!(!buf.has_external_change().unwrap());
         fs::remove_file(&path).ok();
     }
