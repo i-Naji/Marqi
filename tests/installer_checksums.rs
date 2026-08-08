@@ -10,4 +10,6 @@ fn installers_fail_closed_without_checksums() {
     }
     assert!(unix.contains("MARQI_ALLOW_UNVERIFIED:-}"));
     assert!(windows.contains("MARQI_ALLOW_UNVERIFIED -eq \"1\""));
+    assert!(windows.contains("if (-not $Expected)"));
+    assert!(windows.contains(".Trim()"));
 }

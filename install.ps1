@@ -49,15 +49,18 @@ try {
     # Verify the published sha256 checksum.
     $Expected = $null
     try {
-        $Expected = ((Invoke-RestMethod "$Url.sha256") -split '\s+')[0].ToLower()
+        $Body = [string](Invoke-RestMethod "$Url.sha256")
+        $Expected = ($Body.Trim() -split '\s+')[0].ToLower()
     } catch {
+        $Expected = $null
+    }
+    if (-not $Expected) {
         if ($env:MARQI_ALLOW_UNVERIFIED -eq "1") {
             Write-Host "warning: checksum file unavailable; installing without verification"
         } else {
             throw "checksum file unavailable (or set MARQI_ALLOW_UNVERIFIED=1)"
         }
-    }
-    if ($Expected) {
+    } else {
         $Actual = (Get-FileHash $ZipPath -Algorithm SHA256).Hash.ToLower()
         if ($Actual -ne $Expected) { throw "checksum verification failed" }
     }
