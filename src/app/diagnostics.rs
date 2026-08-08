@@ -201,7 +201,7 @@ fn table_diagnostics(lines: &[&str], fenced: &[bool]) -> Vec<Diagnostic> {
     let mut items = Vec::new();
     let mut line = 0;
     while line + 1 < lines.len() {
-        if fenced[line] || !pipe_line(lines[line]) || !pipe_line(lines[line + 1]) {
+        if fenced[line] || !table_row(lines[line]) || !table_row(lines[line + 1]) {
             line += 1;
             continue;
         }
@@ -235,12 +235,18 @@ fn pipe_line(line: &str) -> bool {
     !pipe_positions(line.trim()).is_empty()
 }
 
+fn table_row(line: &str) -> bool {
+    let trimmed = line.trim();
+    let pipes = pipe_positions(trimmed);
+    pipes.first() == Some(&0) || pipes.last() == Some(&trimmed.len().saturating_sub(1))
+}
+
 fn separator_line(line: &str) -> bool {
     let cells = cells(line);
     !cells.is_empty()
         && cells.iter().all(|cell| {
             let core = cell.trim().trim_matches(':');
-            core.len() >= 3 && core.chars().all(|ch| ch == '-')
+            !core.is_empty() && core.chars().all(|ch| ch == '-')
         })
 }
 
@@ -354,5 +360,11 @@ mod tests {
         diagnose("|\n| x |\n");
         diagnose("|\n|\n");
         diagnose("  |  \n| a | b |\n");
+    }
+
+    #[test]
+    fn prose_pipes_and_single_dash_tables_are_not_flagged() {
+        assert!(diagnose("Use grep | sort to filter.\nThen wc | less to page.\n").is_empty());
+        assert!(diagnose("| A | B |\n| - | - |\n| 1 | 2 |\n").is_empty());
     }
 }
