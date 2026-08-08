@@ -224,6 +224,16 @@ fn document_statistics_include_the_selection() {
     );
 }
 
+#[test]
+fn document_statistics_update_after_edits() {
+    let mut a = app_with("one two");
+    a.run_action(Action::ToggleStats);
+    assert_eq!(a.status_stats_text().as_deref(), Some("2w · 7c · 1m"));
+    a.cursor.byte = a.buffer.rope().len_bytes();
+    type_str(&mut a, " three");
+    assert_eq!(a.status_stats_text().as_deref(), Some("3w · 13c · 1m"));
+}
+
 fn press(app: &mut App, code: KeyCode) {
     press_mod(app, code, KeyModifiers::NONE);
 }

@@ -6,7 +6,7 @@
 //! quits, and `^L` cycles presets. The app owns the buffer, cursor, a cached
 //! display [`Layout`], and a viewport that scrolls to follow the cursor.
 
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
 use std::time::{Duration, Instant};
 
@@ -250,6 +250,7 @@ pub struct App {
 
     // Monotonic content version, bumped on every edit.
     version: u64,
+    stats_cache: Cell<Option<(u64, usize, usize)>>,
 
     // Markdown rendering: shared theme + highlighter and the cached read-mode
     // row index.
@@ -334,6 +335,7 @@ impl App {
             layout_dirty: true,
             line_index,
             version: 0,
+            stats_cache: Cell::new(None),
             theme: MarkdownTheme::default(),
             highlighter: CodeHighlighter::new(None),
             theme_overrides: HashMap::new(),
@@ -461,18 +463,25 @@ impl App {
         if !self.show_status_stats {
             return None;
         }
-        let mut words = 0usize;
-        let mut chars = 0usize;
-        let mut in_word = false;
-        for ch in self.buffer.rope().chars() {
-            chars += 1;
-            if ch.is_whitespace() {
-                in_word = false;
-            } else if !in_word {
-                words += 1;
-                in_word = true;
+        let (words, chars) = match self.stats_cache.get() {
+            Some((version, words, chars)) if version == self.version => (words, chars),
+            _ => {
+                let mut words = 0usize;
+                let mut chars = 0usize;
+                let mut in_word = false;
+                for ch in self.buffer.rope().chars() {
+                    chars += 1;
+                    if ch.is_whitespace() {
+                        in_word = false;
+                    } else if !in_word {
+                        words += 1;
+                        in_word = true;
+                    }
+                }
+                self.stats_cache.set(Some((self.version, words, chars)));
+                (words, chars)
             }
-        }
+        };
         let minutes = words.div_ceil(200).max(1);
         let selection = self
             .selection_range()
