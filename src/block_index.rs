@@ -29,7 +29,7 @@ const SEAM_SEARCH_LINES: usize = 256;
 
 /// One top-level block: a maximal run of source lines owned by a single
 /// top-level comrak node.
-#[derive(Clone, PartialEq, Eq, Debug)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub struct SourceBlock {
     pub start_line: usize,
     /// Inclusive.
@@ -314,7 +314,7 @@ impl BlockIndex {
                 .iter()
                 .filter(|b| b.start_line > pre_v)
                 .map(|b| {
-                    let mut block = b.clone();
+                    let mut block = *b;
                     block.start_line = block.start_line.saturating_add_signed(line_delta);
                     block.end_line = block.end_line.saturating_add_signed(line_delta);
                     block.start_byte = block.start_byte.saturating_add_signed(byte_delta);

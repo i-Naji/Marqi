@@ -455,10 +455,11 @@ pub fn build_preview_index(
         segments: Vec::new(),
         row_starts: vec![0],
     };
-    let blocks = cache.index.blocks().to_vec();
     let mut next_line = 0usize;
     let mut emitted = false;
-    for block in &blocks {
+    for idx in 0..cache.index.blocks().len() {
+        let block_owned = cache.index.blocks()[idx];
+        let block = &block_owned;
         if let Some((first, last)) = gap_content_range(rope, next_line, block.start_line) {
             if emitted {
                 view.push(PreviewSegment::Separator, 1);
@@ -481,7 +482,7 @@ pub fn build_preview_index(
         };
         view.push(
             PreviewSegment::Block {
-                block: block.clone(),
+                block: *block,
                 blank: height.blank,
             },
             rows,
@@ -586,9 +587,10 @@ pub fn render_preview_cached(
     let width = width.max(1);
     let total = rope.len_lines();
     let mut out = Vec::new();
-    let blocks = cache.index.blocks().to_vec();
     let mut next_line = 0usize;
-    for block in &blocks {
+    for idx in 0..cache.index.blocks().len() {
+        let block_owned = cache.index.blocks()[idx];
+        let block = &block_owned;
         push_gap_defs(rope, next_line, block.start_line, theme, &mut out);
         if !out.is_empty() {
             out.push(Line::default());
@@ -711,9 +713,10 @@ pub fn build_full(
     let mut active_lines = (cursor_line, cursor_line);
 
     let mut line = 0;
-    let blocks = cache.index.blocks().to_vec();
     let ref_defs = cache.index.ref_defs().to_string();
-    for (idx, block) in blocks.iter().enumerate() {
+    for idx in 0..cache.index.blocks().len() {
+        let block_owned = cache.index.blocks()[idx];
+        let block = &block_owned;
         if line < block.start_line {
             push_raw_gap(
                 rope,
@@ -854,9 +857,10 @@ pub fn build_index(
     };
 
     let mut line = 0;
-    let blocks = cache.index.blocks().to_vec();
     let ref_defs = cache.index.ref_defs().to_string();
-    for (idx, block) in blocks.iter().enumerate() {
+    for idx in 0..cache.index.blocks().len() {
+        let block_owned = cache.index.blocks()[idx];
+        let block = &block_owned;
         if line < block.start_line {
             push_raw_segment(
                 rope,
@@ -896,7 +900,7 @@ pub fn build_index(
                 );
             } else {
                 view.push(Segment::Block {
-                    block: block.clone(),
+                    block: *block,
                     rows: height.rows as usize,
                 });
             }
@@ -2570,7 +2574,7 @@ mod tests {
         let hl = CodeHighlighter::new(None);
         let mut cache = ViewCache::default();
         cache.ensure_blocks(&rope, 0);
-        let block = cache.index.blocks()[0].clone();
+        let block = cache.index.blocks()[0];
 
         for width in [40, 60, 80, 100] {
             let _ = cache.block_height(&rope, &block, width, &theme, &hl);
