@@ -260,20 +260,20 @@ impl ViewCache {
         self.tick += 1;
     }
 
-    fn cached_block(
+    fn ensure_block(
         &mut self,
         rope: &Rope,
         block: &SourceBlock,
         width: usize,
         theme: &MarkdownTheme,
         highlighter: &CodeHighlighter,
-    ) -> (Vec<Line<'static>>, Vec<Option<usize>>) {
+    ) -> u64 {
         let key = self.block_key(block, width, theme);
         let tick = self.tick;
         if let Some(cached) = self.rendered.get_mut(&key) {
             cached.last_used = tick;
             self.stats.block_hits += 1;
-            return (cached.lines.clone(), cached.sources.clone());
+            return key;
         }
 
         // Only a miss pays for slicing the source out of the rope.
@@ -295,14 +295,38 @@ impl ViewCache {
         self.rendered.insert(
             key,
             CachedBlock {
-                lines: lines.clone(),
-                sources: sources.clone(),
+                lines,
+                sources,
                 bytes,
                 last_used: tick,
             },
         );
         self.stats.block_renders += 1;
-        (lines, sources)
+        key
+    }
+
+    fn cached_block_entry(
+        &mut self,
+        rope: &Rope,
+        block: &SourceBlock,
+        width: usize,
+        theme: &MarkdownTheme,
+        highlighter: &CodeHighlighter,
+    ) -> &CachedBlock {
+        let key = self.ensure_block(rope, block, width, theme, highlighter);
+        &self.rendered[&key]
+    }
+
+    fn cached_block(
+        &mut self,
+        rope: &Rope,
+        block: &SourceBlock,
+        width: usize,
+        theme: &MarkdownTheme,
+        highlighter: &CodeHighlighter,
+    ) -> (Vec<Line<'static>>, Vec<Option<usize>>) {
+        let entry = self.cached_block_entry(rope, block, width, theme, highlighter);
+        (entry.lines.clone(), entry.sources.clone())
     }
 
     /// Evict cold entries (not touched this frame), oldest tick first, until
@@ -562,9 +586,8 @@ pub fn assemble_preview(
                             .take(take),
                     );
                 } else {
-                    let (block_lines, _) =
-                        cache.cached_block(rope, block, width, theme, highlighter);
-                    out.extend(block_lines.into_iter().skip(offset).take(take));
+                    let entry = cache.cached_block_entry(rope, block, width, theme, highlighter);
+                    out.extend(entry.lines.iter().skip(offset).take(take).cloned());
                 }
             }
         }
@@ -1205,14 +1228,17 @@ pub fn assemble(
                 });
             }
             Segment::Block { block, .. } => {
-                let (mut block_lines, sources) =
-                    cache.cached_block(rope, block, width, theme, highlighter);
+                let entry = cache.cached_block_entry(rope, block, width, theme, highlighter);
+                let mut block_lines: Vec<Line<'static>> =
+                    entry.lines.iter().skip(offset).take(take).cloned().collect();
+                let sources: Vec<Option<usize>> =
+                    entry.sources.iter().skip(offset).take(take).copied().collect();
                 if let Some((range, color)) = sel
                     && intersects((block.start_byte, block.end_byte), range)
                 {
                     highlight_block(&mut block_lines, color);
                 }
-                for (line, source) in block_lines.into_iter().zip(sources).skip(offset).take(take) {
+                for (line, source) in block_lines.into_iter().zip(sources) {
                     out.numbers.push(source.map(|rel| block.start_line + rel));
                     out.lines.push(line);
                 }
