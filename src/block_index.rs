@@ -573,7 +573,7 @@ fn defs_from_gaps(rope: &Rope, owner: &[Option<usize>]) -> BTreeMap<usize, Strin
             continue;
         }
         let line = rope.line(idx).to_string();
-        if line.trim().is_empty() {
+        if !line.trim_start().starts_with('[') {
             continue;
         }
         let arena = Arena::new();
