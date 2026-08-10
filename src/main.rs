@@ -147,7 +147,11 @@ fn render_to_stdout(options: &RenderOptions, config_path: Option<&std::path::Pat
     };
     if options.html {
         let html = comrak::markdown_to_html(&source, &markdown::gfm_options());
-        std::io::stdout().write_all(html.as_bytes())?;
+        match std::io::stdout().write_all(html.as_bytes()) {
+            Ok(()) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::BrokenPipe => return Ok(()),
+            Err(error) => return Err(error.into()),
+        }
         return Ok(());
     }
     let (cfg, warning) = load_config(config_path);
@@ -172,7 +176,11 @@ fn render_to_stdout(options: &RenderOptions, config_path: Option<&std::path::Pat
     let mut output = std::io::BufWriter::new(std::io::stdout().lock());
     for line in render_preview(&source, width, &theme, &highlighter) {
         let text: String = line.spans.iter().map(|s| s.content.as_ref()).collect();
-        writeln!(output, "{text}")?;
+        match writeln!(output, "{text}") {
+            Ok(()) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::BrokenPipe => return Ok(()),
+            Err(error) => return Err(error.into()),
+        }
     }
     Ok(())
 }
