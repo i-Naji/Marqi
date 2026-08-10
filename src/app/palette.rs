@@ -116,16 +116,19 @@ pub(super) fn fuzzy_score(label: &str, query: &str) -> Option<i32> {
     let mut next = wanted.next()?;
     let mut score = 0;
     let mut consecutive = false;
-    for (index, ch) in label.to_lowercase().chars().enumerate() {
+    let mut prev: Option<char> = None;
+    for ch in label.chars().flat_map(char::to_lowercase) {
         if ch != next {
             consecutive = false;
+            prev = Some(ch);
             continue;
         }
         score += if consecutive { 8 } else { 3 };
-        if index == 0 || label.as_bytes().get(index.wrapping_sub(1)) == Some(&b' ') {
+        if prev.is_none_or(|p| p == ' ') {
             score += 4;
         }
         consecutive = true;
+        prev = Some(ch);
         let Some(wanted_next) = wanted.next() else {
             return Some(score);
         };
@@ -146,5 +149,10 @@ mod tests {
         assert!(
             fuzzy_score("Raw", "raw").unwrap() > fuzzy_score("Redo action work", "raw").unwrap()
         );
+    }
+
+    #[test]
+    fn fuzzy_word_start_bonus_handles_multibyte_prefixes() {
+        assert!(fuzzy_score("café bar", "bar") > fuzzy_score("cafébar", "bar"));
     }
 }
