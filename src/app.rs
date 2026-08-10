@@ -813,18 +813,19 @@ impl App {
     /// Toggle the raw view: every line shown as highlighted source (no markers
     /// stripped), still fully editable.
     fn toggle_raw_view(&mut self) {
-        if !self.mode.is_read() {
-            if self.raw_view {
-                self.raw_scroll_y = self.scroll_y;
-                self.scroll_y = self.focus_scroll_y;
-            } else {
-                self.focus_scroll_y = self.scroll_y;
-                self.scroll_y = self.raw_scroll_y;
-            }
-            self.follow_cursor = false;
+        if self.mode.is_read() {
+            return;
         }
+        if self.raw_view {
+            self.raw_scroll_y = self.scroll_y;
+            self.scroll_y = self.focus_scroll_y;
+        } else {
+            self.focus_scroll_y = self.scroll_y;
+            self.scroll_y = self.raw_scroll_y;
+        }
+        self.follow_cursor = false;
         self.raw_view = !self.raw_view;
-        self.view = None; // force a rebuild with the other builder
+        self.view = None;
         self.status = Some(
             if self.raw_view {
                 "Raw view on"
