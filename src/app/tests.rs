@@ -1503,6 +1503,19 @@ fn find_uses_smart_case() {
 }
 
 #[test]
+fn regex_search_does_not_infer_case_from_the_pattern() {
+    let mut a = app_with("cat CAT");
+    press_mod(&mut a, KeyCode::Char('f'), KeyModifiers::CONTROL);
+    press_mod(&mut a, KeyCode::Char('r'), KeyModifiers::ALT);
+    let starts: Vec<_> = a
+        .search_matches("C.T")
+        .iter()
+        .map(|found| found.start)
+        .collect();
+    assert_eq!(starts, [0, 4]);
+}
+
+#[test]
 fn find_reuses_cached_matches_until_the_document_changes() {
     let mut a = app_with("alpha beta alpha");
     let starts = |app: &App| {

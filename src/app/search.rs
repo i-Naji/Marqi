@@ -202,7 +202,8 @@ impl App {
         } else {
             regex::escape(query)
         };
-        let exact = self.search_options.case_sensitive || query.chars().any(char::is_uppercase);
+        let exact = self.search_options.case_sensitive
+            || (!self.search_options.regex && query.chars().any(char::is_uppercase));
         let compiled = RegexBuilder::new(&pattern)
             .case_insensitive(!exact)
             .unicode(true)
@@ -327,6 +328,7 @@ impl App {
                 self.history.break_run();
                 self.replace_range(found.start, found.end, replacement);
                 self.history.break_run();
+                self.find_restore = None;
                 self.find_step(query, true, true);
             }
             None => self.find_step(query, true, true),
@@ -356,6 +358,7 @@ impl App {
         self.history.break_run();
         self.replace_range_with_cursor(0, self.buffer.len_bytes(), &out, Some(new_cursor));
         self.history.break_run();
+        self.find_restore = None;
         matches.len()
     }
 
