@@ -224,7 +224,7 @@ fn session_path() -> Option<PathBuf> {
         .map(|dirs| dirs.data_local_dir().join("session.toml"))
 }
 
-fn path_key(path: &Path) -> String {
+pub(super) fn path_key(path: &Path) -> String {
     std::fs::canonicalize(path)
         .or_else(|_| {
             if path.is_absolute() {

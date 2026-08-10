@@ -49,9 +49,9 @@ impl App {
             .path()
             .ok_or_else(|| anyhow::anyhow!("document has no file name"))?
             .to_path_buf();
+        let key = super::session::path_key(&path);
         trash::delete(&path)?;
-        self.recent_files
-            .retain(|entry| entry.path != path.to_string_lossy());
+        self.recent_files.retain(|entry| entry.path != key);
         self.buffer = TextBuffer::empty();
         self.history = History::new();
         self.reset_after_buffer_change();
