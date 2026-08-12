@@ -1,6 +1,19 @@
 use super::App;
 use regex::Regex;
 use std::process::Command;
+use std::sync::LazyLock;
+
+static FOOTNOTE_REF: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\[\^([^\]]+)\]").unwrap());
+static INLINE_LINK: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"\[[^\]]+\]\(([^)\s]+)").unwrap());
+static ANGLE_URL: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"<(https?://[^>]+)>").unwrap());
+static BARE_URL: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(https?://[^\s<>)]+)").unwrap());
+static REF_LINK: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"\[([^\]]+)\]\[([^\]]*)\]").unwrap());
+static REF_LINK_LABEL: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"\[([^\]]+)\]\[[^\]]*\]").unwrap());
+static FOOTNOTE_DEF_AT: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"(?mi)^[ \t]*\[\^([^\]]+)\]:").unwrap());
 
 impl App {
     pub(super) fn follow_link(&mut self) {
@@ -15,7 +28,7 @@ impl App {
             }
             return;
         }
-        if let Some(id) = capture_at(&source, cursor, r"\[\^([^\]]+)\]", 1) {
+        if let Some(id) = capture_at(&source, cursor, &FOOTNOTE_REF, 1) {
             if let Some(target) = footnote_definition(&source, &id) {
                 self.jump_to_byte(target);
             } else {
@@ -24,13 +37,13 @@ impl App {
             return;
         }
 
-        let target = capture_at(&source, cursor, r"\[[^\]]+\]\(([^)\s]+)", 1)
-            .or_else(|| capture_at(&source, cursor, r"<(https?://[^>]+)>", 1))
-            .or_else(|| capture_at(&source, cursor, r"(https?://[^\s<>)]+)", 1))
+        let target = capture_at(&source, cursor, &INLINE_LINK, 1)
+            .or_else(|| capture_at(&source, cursor, &ANGLE_URL, 1))
+            .or_else(|| capture_at(&source, cursor, &BARE_URL, 1))
             .or_else(|| {
-                capture_at(&source, cursor, r"\[([^\]]+)\]\[([^\]]*)\]", 2).and_then(|id| {
+                capture_at(&source, cursor, &REF_LINK, 2).and_then(|id| {
                     let id = if id.is_empty() {
-                        capture_at(&source, cursor, r"\[([^\]]+)\]\[[^\]]*\]", 1)?
+                        capture_at(&source, cursor, &REF_LINK_LABEL, 1)?
                     } else {
                         id
                     };
@@ -56,8 +69,7 @@ impl App {
     }
 }
 
-fn capture_at(source: &str, cursor: usize, pattern: &str, group: usize) -> Option<String> {
-    let regex = Regex::new(pattern).ok()?;
+fn capture_at(source: &str, cursor: usize, regex: &Regex, group: usize) -> Option<String> {
     regex.captures_iter(source).find_map(|captures| {
         let whole = captures.get(0)?;
         if cursor < whole.start() || cursor > whole.end() {
@@ -95,8 +107,7 @@ fn footnote_reference(source: &str, id: &str) -> Option<usize> {
 }
 
 fn footnote_definition_at(source: &str, cursor: usize) -> Option<String> {
-    let regex = Regex::new(r"(?mi)^[ \t]*\[\^([^\]]+)\]:").ok()?;
-    regex.captures_iter(source).find_map(|captures| {
+    FOOTNOTE_DEF_AT.captures_iter(source).find_map(|captures| {
         let whole = captures.get(0)?;
         (cursor >= whole.start() && cursor <= whole.end())
             .then(|| captures.get(1).map(|id| id.as_str().to_string()))
