@@ -1,4 +1,5 @@
 use super::App;
+use super::table::pipe_positions;
 use crossterm::event::{KeyCode, KeyEvent};
 use regex::Regex;
 use std::collections::{HashMap, HashSet};
@@ -268,24 +269,6 @@ fn cells(line: &str) -> Vec<&str> {
     cells
 }
 
-fn pipe_positions(text: &str) -> Vec<usize> {
-    let bytes = text.as_bytes();
-    bytes
-        .iter()
-        .enumerate()
-        .filter_map(|(index, byte)| {
-            if *byte != b'|' {
-                return None;
-            }
-            let slashes = bytes[..index]
-                .iter()
-                .rev()
-                .take_while(|byte| **byte == b'\\')
-                .count();
-            slashes.is_multiple_of(2).then_some(index)
-        })
-        .collect()
-}
 
 fn heading_diagnostics(lines: &[&str], fenced: &[bool]) -> Vec<Diagnostic> {
     let mut seen = HashMap::new();

@@ -90,7 +90,7 @@ fn separator_cell(source: &str, width: usize) -> String {
     )
 }
 
-fn pipe_positions(text: &str) -> Vec<usize> {
+pub(super) fn pipe_positions(text: &str) -> Vec<usize> {
     let bytes = text.as_bytes();
     bytes
         .iter()
