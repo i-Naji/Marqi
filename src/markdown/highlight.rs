@@ -60,7 +60,9 @@ fn bundled_theme(name: &str) -> Option<&'static [u8]> {
 
 impl CodeHighlighter {
     pub fn has_theme(name: &str) -> bool {
-        bundled_theme(name).is_some() || ThemeSet::load_defaults().themes.contains_key(name)
+        static DEFAULTS: std::sync::LazyLock<ThemeSet> =
+            std::sync::LazyLock::new(ThemeSet::load_defaults);
+        bundled_theme(name).is_some() || DEFAULTS.themes.contains_key(name)
     }
 
     /// Build a highlighter using the named syntect theme — a bundled port, or
