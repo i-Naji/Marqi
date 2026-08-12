@@ -9,7 +9,7 @@
 use std::path::PathBuf;
 
 use anyhow::{Result, bail};
-use crossterm::event::{KeyCode, KeyEvent};
+use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use unicode_segmentation::UnicodeSegmentation;
 use unicode_width::UnicodeWidthStr;
 
@@ -436,7 +436,11 @@ impl App {
                 Err(anyhow::anyhow!("{} is not a file", path.display()))
             }
             FilePathKind::Open => self.open_file_path(path.clone()),
-            FilePathKind::Rename if self.buffer.path() == Some(path.as_path()) => {
+            FilePathKind::Rename
+                if self.buffer.path().is_some_and(|current| {
+                    super::session::path_key(current) == super::session::path_key(&path)
+                }) =>
+            {
                 self.status = Some("File name unchanged".to_string());
                 return;
             }
@@ -595,7 +599,7 @@ pub(super) fn edit_line(key: KeyEvent, input: &mut String, cursor: &mut usize) -
             let next = next_grapheme(input, *cursor);
             input.replace_range(*cursor..next, "");
         }
-        KeyCode::Char(c) if !ctrl => {
+        KeyCode::Char(c) if !ctrl && !key.modifiers.contains(KeyModifiers::ALT) => {
             input.insert(*cursor, c);
             *cursor += c.len_utf8();
         }
