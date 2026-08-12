@@ -234,6 +234,11 @@ fn build_status(app: &App, width: usize) -> Line<'static> {
             status,
         ));
         spans.push(Span::styled(right, right_style));
+    } else if width > left_width {
+        spans.push(Span::styled(
+            clip_to_width(&format!(" {right}"), width - left_width),
+            right_style,
+        ));
     }
     Line::from(spans)
 }
@@ -677,7 +682,7 @@ fn draw_palette(frame: &mut Frame, app: &App, area: Rect) {
     let theme = app.theme();
     let items = app.palette_items();
     let width = 64.min(area.width.saturating_sub(2).max(1));
-    let height = (items.len() as u16 + 3).min(area.height.saturating_sub(1).max(1));
+    let height = (items.len() + 3).min(area.height.saturating_sub(1).max(1) as usize) as u16;
     let popup = Rect::new(
         area.x + area.width.saturating_sub(width) / 2,
         area.y + area.height.saturating_sub(height) / 3,
@@ -726,7 +731,7 @@ fn draw_outline(frame: &mut Frame, app: &mut App, area: Rect) {
     let items = app.outline_items();
     let theme = app.theme();
     let width = 64.min(area.width.saturating_sub(2).max(1));
-    let height = (items.len() as u16 + 3).min(area.height.saturating_sub(1).max(1));
+    let height = (items.len() + 3).min(area.height.saturating_sub(1).max(1) as usize) as u16;
     let popup = Rect::new(
         area.x + area.width.saturating_sub(width) / 2,
         area.y + area.height.saturating_sub(height) / 3,
@@ -781,7 +786,7 @@ fn draw_recent_files(frame: &mut Frame, app: &App, area: Rect) {
     let theme = app.theme();
     let items = app.recent_items();
     let width = 76.min(area.width.saturating_sub(2).max(1));
-    let height = (items.len() as u16 + 3).min(area.height.saturating_sub(1).max(1));
+    let height = (items.len() + 3).min(area.height.saturating_sub(1).max(1) as usize) as u16;
     let popup = Rect::new(
         area.x + area.width.saturating_sub(width) / 2,
         area.y + area.height.saturating_sub(height) / 3,
@@ -824,7 +829,7 @@ fn draw_diagnostics(frame: &mut Frame, app: &App, area: Rect) {
     let theme = app.theme();
     let items = app.diagnostic_items();
     let width = 76.min(area.width.saturating_sub(2).max(1));
-    let height = (items.len() as u16 + 2).min(area.height.saturating_sub(1).max(1));
+    let height = (items.len() + 2).min(area.height.saturating_sub(1).max(1) as usize) as u16;
     let popup = Rect::new(
         area.x + area.width.saturating_sub(width) / 2,
         area.y + area.height.saturating_sub(height) / 3,
