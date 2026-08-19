@@ -275,20 +275,14 @@ pub fn save_runtime_settings(
 
 fn set_toml_value(text: &mut String, section: &str, key: &str, value: &str) {
     let mut lines: Vec<String> = text.split_inclusive('\n').map(str::to_string).collect();
-    if !text.is_empty() && !text.ends_with('\n') {
-        let tail = text
-            .rsplit_once('\n')
-            .map_or(text.as_str(), |(_, tail)| tail);
-        if lines.last().is_none_or(|line| line.ends_with('\n')) {
-            lines.push(tail.to_string());
-        }
+    if let Some(last) = lines.last_mut()
+        && !last.ends_with('\n')
+    {
+        last.push('\n');
     }
 
     let header = format!("[{section}]");
     let Some(start) = lines.iter().position(|line| line.trim() == header) else {
-        if !text.is_empty() && !text.ends_with('\n') {
-            lines.push("\n".to_string());
-        }
         if !lines.is_empty() && lines.last().is_some_and(|line| !line.trim().is_empty()) {
             lines.push("\n".to_string());
         }
@@ -466,6 +460,19 @@ mod tests {
         assert!(text.contains("line_numbers = \"relative\""));
         assert!(text.contains("name = \"nord\""));
         assert!(text.contains("variant = \"light\""));
+        std::fs::remove_file(&path).ok();
+    }
+
+    #[test]
+    fn saving_runtime_settings_appends_after_an_unterminated_line() {
+        let path = temp_path("save_runtime_no_newline");
+        std::fs::write(&path, "[editor]\ntab_width = 2").unwrap();
+
+        save_runtime_settings(&path, "standard", "off", "nord", "dark").unwrap();
+
+        let text = std::fs::read_to_string(&path).unwrap();
+        assert!(text.contains("tab_width = 2\nkeybindings = \"standard\"\nline_numbers = \"off\""));
+        assert!(Config::load_from_path(&path).1.is_none());
         std::fs::remove_file(&path).ok();
     }
 
