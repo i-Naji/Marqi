@@ -869,7 +869,7 @@ impl App {
     fn leave_preview(&mut self) {
         self.read_scroll_y = self.scroll_y;
         self.mode = self.resting_mode();
-        self.cursor.byte = self.read_cursor.min(self.buffer.len_bytes());
+        self.cursor.byte = self.buffer.snap_to_char(self.read_cursor);
         self.scroll_y = if self.raw_view {
             self.raw_scroll_y
         } else {
@@ -1782,7 +1782,7 @@ impl App {
     }
 
     fn reset_after_buffer_change(&mut self) {
-        self.cursor.byte = self.cursor.byte.min(self.buffer.len_bytes());
+        self.cursor.byte = self.buffer.snap_to_char(self.cursor.byte);
         self.selection_anchor = None;
         self.layout = Layout::build(self.buffer.rope(), self.wrap_width, self.tab_width);
         self.layout_width = self.wrap_width;

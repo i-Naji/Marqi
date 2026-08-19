@@ -252,6 +252,12 @@ impl TextBuffer {
         self.rope.slice(s..e).to_string()
     }
 
+    /// Clamp a byte offset to the buffer and floor it to a char boundary.
+    pub fn snap_to_char(&self, byte: usize) -> usize {
+        let byte = byte.min(self.rope.len_bytes());
+        self.rope.char_to_byte(self.rope.byte_to_char(byte))
+    }
+
     /// The underlying rope (read-only access for rendering).
     pub fn rope(&self) -> &Rope {
         &self.rope

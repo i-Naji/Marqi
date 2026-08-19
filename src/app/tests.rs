@@ -1761,6 +1761,28 @@ fn manual_save_offers_to_reload_an_external_change() {
 }
 
 #[test]
+fn reload_snaps_the_cursor_to_a_char_boundary() {
+    let path = std::env::temp_dir().join(format!("marqi_reload_snap_{}.md", std::process::id()));
+    std::fs::write(&path, "abcd").unwrap();
+    let mut a = App::with_config(TextBuffer::from_path(&path).unwrap(), &Config::default());
+    a.clipboard = Clipboard::internal_only();
+    press(&mut a, KeyCode::Right);
+    press(&mut a, KeyCode::Right);
+    type_str(&mut a, "x");
+    press(&mut a, KeyCode::Left);
+    std::fs::write(&path, "aé").unwrap();
+
+    press_mod(&mut a, KeyCode::Char('s'), KeyModifiers::CONTROL);
+    press(&mut a, KeyCode::Char('r'));
+
+    assert_eq!(a.buffer.rope().to_string(), "aé");
+    assert_eq!(a.cursor.byte, 1);
+    press(&mut a, KeyCode::Right);
+    assert_eq!(a.cursor.byte, 3);
+    std::fs::remove_file(&path).ok();
+}
+
+#[test]
 fn autosave_never_overwrites_an_external_change() {
     let path =
         std::env::temp_dir().join(format!("marqi_autosave_conflict_{}.md", std::process::id()));

@@ -53,7 +53,7 @@ impl App {
         if let Some(current) = self.buffer.path().map(path_key)
             && let Some(entry) = self.recent_files.iter().find(|entry| entry.path == current)
         {
-            self.cursor.byte = entry.cursor.min(self.buffer.len_bytes());
+            self.cursor.byte = self.buffer.snap_to_char(entry.cursor);
             self.focus_scroll_y = entry.focus_scroll;
             self.raw_scroll_y = entry.raw_scroll;
             self.read_scroll_y = entry.read_scroll;
@@ -161,7 +161,7 @@ impl App {
         self.buffer = TextBuffer::from_path(&entry.path)?;
         self.history = History::new();
         self.reset_after_buffer_change();
-        self.cursor.byte = entry.cursor.min(self.buffer.len_bytes());
+        self.cursor.byte = self.buffer.snap_to_char(entry.cursor);
         self.focus_scroll_y = entry.focus_scroll;
         self.raw_scroll_y = entry.raw_scroll;
         self.read_scroll_y = entry.read_scroll;
@@ -290,6 +290,31 @@ mod tests {
         app.open_recent_entry(&entry).unwrap();
 
         assert_eq!(app.buffer.rope().to_string(), "second");
+        assert_eq!(app.cursor.byte, 3);
+        std::fs::remove_file(first).ok();
+        std::fs::remove_file(second).ok();
+    }
+
+    #[test]
+    fn recent_entry_cursor_snaps_to_a_char_boundary() {
+        let first =
+            std::env::temp_dir().join(format!("marqi_session_snap_a_{}.md", std::process::id()));
+        let second =
+            std::env::temp_dir().join(format!("marqi_session_snap_b_{}.md", std::process::id()));
+        std::fs::write(&first, "first").unwrap();
+        std::fs::write(&second, "héllo").unwrap();
+        let mut app = App::with_config(TextBuffer::from_path(&first).unwrap(), &Config::default());
+        let entry = RecentFile {
+            path: second.to_string_lossy().into_owned(),
+            cursor: 2,
+            focus_scroll: 0,
+            raw_scroll: 0,
+            read_scroll: 0,
+        };
+
+        app.open_recent_entry(&entry).unwrap();
+        assert_eq!(app.cursor.byte, 1);
+        app.handle_key(KeyEvent::from(KeyCode::Right));
         assert_eq!(app.cursor.byte, 3);
         std::fs::remove_file(first).ok();
         std::fs::remove_file(second).ok();
