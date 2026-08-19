@@ -1397,7 +1397,6 @@ impl App {
                 Err(error) => {
                     self.auto_save_retry_at = Some(now + AUTO_SAVE_RETRY_DELAY);
                     self.status = Some(format!("Recovery failed: {error}"));
-                    return;
                 }
             }
         }

@@ -162,7 +162,7 @@ impl TextBuffer {
 
     pub fn write_recovery(&self) -> Result<()> {
         if self.len_bytes() > MAX_RECOVERY_BYTES {
-            anyhow::bail!("document is too large for automatic recovery");
+            return self.discard_recovery();
         }
         let path = self
             .recovery_path()
@@ -458,6 +458,22 @@ mod tests {
         let mut p = std::env::temp_dir();
         p.push(format!("marqi_test_{tag}_{}.md", std::process::id()));
         p
+    }
+
+    #[test]
+    fn oversize_documents_drop_their_recovery_snapshot() {
+        let path = temp_path("oversize_recovery");
+        fs::write(&path, "small").unwrap();
+        let mut buf = TextBuffer::from_path(&path).unwrap();
+        buf.restore_recovery("small edit");
+        buf.write_recovery().unwrap();
+        buf.restore_recovery("other");
+        assert_eq!(buf.load_recovery().unwrap().as_deref(), Some("small edit"));
+
+        buf.restore_recovery(&"x".repeat(MAX_RECOVERY_BYTES + 1));
+        buf.write_recovery().unwrap();
+        assert!(buf.load_recovery().unwrap().is_none());
+        fs::remove_file(&path).ok();
     }
 
     #[test]
