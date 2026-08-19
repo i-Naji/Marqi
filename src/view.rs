@@ -1229,10 +1229,20 @@ pub fn assemble(
             }
             Segment::Block { block, .. } => {
                 let entry = cache.cached_block_entry(rope, block, width, theme, highlighter);
-                let mut block_lines: Vec<Line<'static>> =
-                    entry.lines.iter().skip(offset).take(take).cloned().collect();
-                let sources: Vec<Option<usize>> =
-                    entry.sources.iter().skip(offset).take(take).copied().collect();
+                let mut block_lines: Vec<Line<'static>> = entry
+                    .lines
+                    .iter()
+                    .skip(offset)
+                    .take(take)
+                    .cloned()
+                    .collect();
+                let sources: Vec<Option<usize>> = entry
+                    .sources
+                    .iter()
+                    .skip(offset)
+                    .take(take)
+                    .copied()
+                    .collect();
                 if let Some((range, color)) = sel
                     && intersects((block.start_byte, block.end_byte), range)
                 {

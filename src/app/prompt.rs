@@ -328,19 +328,17 @@ impl App {
                 }
             },
             KeyCode::Esc => {}
-            KeyCode::Char('d') | KeyCode::Char('D') => {
-                match self.buffer.discard_recovery() {
-                    Ok(()) => {
-                        self.recovery_content = None;
-                        self.status = Some("Recovery discarded".to_string());
-                    }
-                    Err(error) => {
-                        self.prompt = Some(Prompt::Recovery {
-                            error: Some(format!("Discard failed: {error}")),
-                        });
-                    }
+            KeyCode::Char('d') | KeyCode::Char('D') => match self.buffer.discard_recovery() {
+                Ok(()) => {
+                    self.recovery_content = None;
+                    self.status = Some("Recovery discarded".to_string());
                 }
-            }
+                Err(error) => {
+                    self.prompt = Some(Prompt::Recovery {
+                        error: Some(format!("Discard failed: {error}")),
+                    });
+                }
+            },
             _ => self.prompt = Some(Prompt::Recovery { error: None }),
         }
     }

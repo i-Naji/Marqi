@@ -269,7 +269,6 @@ fn cells(line: &str) -> Vec<&str> {
     cells
 }
 
-
 fn heading_diagnostics(lines: &[&str], fenced: &[bool]) -> Vec<Diagnostic> {
     let mut seen = HashMap::new();
     let mut items = Vec::new();

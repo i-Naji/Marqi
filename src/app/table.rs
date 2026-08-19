@@ -166,8 +166,8 @@ impl App {
         }
         let start = self.buffer.rope().line_to_byte(info.start_line);
         let end = self.line_range(info.end_line).1;
-        let cursor =
-            start + super::floor_char_boundary(&replacement, self.cursor.byte.saturating_sub(start));
+        let cursor = start
+            + super::floor_char_boundary(&replacement, self.cursor.byte.saturating_sub(start));
         self.history.break_run();
         self.replace_range_with_cursor(start, end, &replacement, Some(cursor));
         self.history.break_run();
