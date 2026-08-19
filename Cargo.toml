@@ -11,7 +11,7 @@ repository = "https://github.com/i-naji/marqi"
 homepage = "https://github.com/i-naji/marqi"
 keywords = ["markdown", "editor", "tui", "terminal", "gfm"]
 categories = ["text-editors", "command-line-utilities"]
-exclude = [".github/", ".idea/", "fixtures/", "/marqi", "/install.sh", "/install.ps1", "**/.DS_Store"]
+exclude = [".github/", ".idea/", ".serena/", "assets/", "fixtures/", "/demo.tape", "/marqi", "/install.sh", "/install.ps1", "**/.DS_Store"]
 
 [[bin]]
 name = "marqi"
