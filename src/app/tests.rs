@@ -154,6 +154,25 @@ fn clicking_a_rendered_checkbox_toggles_its_source() {
 }
 
 #[test]
+fn clicks_ignore_prompts_and_literal_checkbox_glyphs() {
+    let mut a = app_with("■ raw\n");
+    a.cursor.byte = 0;
+    a.set_viewport(40, 10);
+    a.handle_mouse(mouse(MouseEventKind::Down(MouseButton::Left), 0, 0));
+    assert_eq!(a.buffer.rope().to_string(), "■ raw\n");
+
+    let mut a = app_with("text");
+    a.set_viewport(40, 10);
+    type_str(&mut a, "x");
+    press_mod(&mut a, KeyCode::Char('q'), KeyModifiers::CONTROL);
+    assert!(a.prompt_view().is_some());
+    let before = a.cursor.byte;
+    a.handle_mouse(mouse(MouseEventKind::Down(MouseButton::Left), 0, 0));
+    assert_eq!(a.cursor.byte, before);
+    assert!(a.prompt_view().is_some());
+}
+
+#[test]
 fn outline_filters_headings_and_jumps_to_source() {
     let mut a = app_with("# First\n\nbody\n\nSecond\n------\n\n### Third\n");
     press_mod(

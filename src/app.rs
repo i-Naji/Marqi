@@ -1270,6 +1270,7 @@ impl App {
             || self.outline.is_some()
             || self.diagnostics.is_some()
             || self.recent_picker.is_some()
+            || self.prompt.is_some()
             || self.mode.is_read()
             || y as usize >= self.viewport_height
         {
@@ -1284,12 +1285,9 @@ impl App {
         if click_col != glyph_col {
             return None;
         }
-        assembled
-            .numbers
-            .get(y as usize)
-            .copied()
-            .flatten()
-            .map(|line| line - 1)
+        let line = assembled.numbers.get(y as usize).copied().flatten()? - 1;
+        let marker = smart_edit::parse_list_marker(&self.line_without_eol(line))?;
+        matches!(marker.kind, smart_edit::ListMarkerKind::Task(_)).then_some(line)
     }
 
     fn mouse_drag(&mut self, x: u16, y: u16) {
@@ -1327,6 +1325,7 @@ impl App {
             || self.outline.is_some()
             || self.diagnostics.is_some()
             || self.recent_picker.is_some()
+            || self.prompt.is_some()
             || self.mode.is_read()
             || y as usize >= self.viewport_height
         {

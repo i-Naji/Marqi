@@ -7,9 +7,9 @@ use crate::markdown::gfm_options;
 
 use super::{App, Motion};
 
-struct ListMarker {
+pub(super) struct ListMarker {
     indent: String,
-    kind: ListMarkerKind,
+    pub(super) kind: ListMarkerKind,
     spacing: String,
     /// Byte length of the full marker prefix (indent + marker + checkbox +
     /// spacing). The prefix is pure ASCII by construction, so slicing the line
@@ -17,7 +17,7 @@ struct ListMarker {
     prefix_len: usize,
 }
 
-enum ListMarkerKind {
+pub(super) enum ListMarkerKind {
     Bullet(char),
     /// A GFM task item (`- [ ]` / `- [x]`); new items are always unchecked.
     Task(char),
@@ -318,7 +318,7 @@ fn is_closing_pair_char(c: char) -> bool {
     matches!(c, '*' | '_' | '~' | '`' | ')' | ']' | '}' | '"' | '\'')
 }
 
-fn parse_list_marker(line: &str) -> Option<ListMarker> {
+pub(super) fn parse_list_marker(line: &str) -> Option<ListMarker> {
     let bytes = line.as_bytes();
     let mut marker_start = 0;
     while marker_start < bytes.len() && is_list_space(bytes[marker_start]) {
