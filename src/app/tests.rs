@@ -41,6 +41,24 @@ fn command_palette_filters_and_runs_actions() {
 }
 
 #[test]
+fn function_keys_double_the_shift_chords() {
+    let mut a = app_with("# Title\n\ntext");
+    press(&mut a, KeyCode::F(1));
+    assert!(a.palette_open());
+    press(&mut a, KeyCode::Esc);
+    press(&mut a, KeyCode::F(2));
+    assert!(a.outline_open());
+    press(&mut a, KeyCode::Esc);
+    press(&mut a, KeyCode::F(12));
+    assert!(a.prompt_view().unwrap().text.starts_with("Save as"));
+    press(&mut a, KeyCode::Esc);
+
+    a.run_action(Action::TogglePreview);
+    press(&mut a, KeyCode::F(1));
+    assert!(a.palette_open());
+}
+
+#[test]
 fn command_palette_keeps_disabled_actions_open() {
     let mut a = app_with("text");
     a.run_action(Action::TogglePreview);

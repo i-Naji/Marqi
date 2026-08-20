@@ -648,12 +648,12 @@ impl App {
 
         let ctrl = ctrl_like(key.modifiers);
 
-        // Global Ctrl shortcuts. These are used instead of function keys, which
-        // many terminals (e.g. macOS Terminal) do not deliver. They are handled
-        // before the help/read checks so they work in every preset and mode. In
-        // the Emacs preset, ^P and ^B therefore shadow previous-line /
-        // backward-char — use the arrow keys for those.
-        if ctrl && self.handle_global_ctrl(key) {
+        // Global shortcuts. F1/F2/F12 double the Ctrl+Shift chords, which many
+        // terminals (e.g. macOS Terminal, tmux) cannot tell apart from plain
+        // Ctrl. They are handled before the help/read checks so they work in
+        // every preset and mode. In the Emacs preset, ^P and ^B therefore
+        // shadow previous-line / backward-char — use the arrow keys for those.
+        if self.handle_global_shortcut(key) {
             // A global shortcut also ends any pending multi-key chord (Vim
             // `d`/`g`/`y`, Emacs `C-x`); otherwise the stale leader would
             // swallow or reinterpret the next keystroke.
@@ -699,9 +699,13 @@ impl App {
         }
     }
 
-    /// Dispatch a global Ctrl shortcut. Returns whether the key was handled.
-    fn handle_global_ctrl(&mut self, key: KeyEvent) -> bool {
+    /// Dispatch a global shortcut. Returns whether the key was handled.
+    fn handle_global_shortcut(&mut self, key: KeyEvent) -> bool {
         let action = match key.code {
+            KeyCode::F(1) => Action::CommandPalette,
+            KeyCode::F(2) => Action::Outline,
+            KeyCode::F(12) => Action::SaveAs,
+            _ if !ctrl_like(key.modifiers) => return false,
             KeyCode::Char('q') => Action::Quit,
             KeyCode::Char('s' | 'S') if key.modifiers.contains(KeyModifiers::SHIFT) => {
                 Action::SaveAs

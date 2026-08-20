@@ -123,7 +123,7 @@ impl Action {
     pub fn shortcut(self) -> &'static str {
         match self {
             Self::Save => "Ctrl+S",
-            Self::SaveAs => "Ctrl+Shift+S",
+            Self::SaveAs => "Ctrl+Shift+S / F12",
             Self::Quit => "Ctrl+Q",
             Self::Settings => "Ctrl+G",
             Self::Find => "Ctrl+F",
@@ -138,7 +138,7 @@ impl Action {
             Self::Copy => "Ctrl+C",
             Self::Cut => "Ctrl+X",
             Self::Paste => "Ctrl+V",
-            Self::CommandPalette => "Ctrl+Shift+P",
+            Self::CommandPalette => "Ctrl+Shift+P / F1",
             Self::Bold
             | Self::Italic
             | Self::Strikethrough
@@ -148,7 +148,7 @@ impl Action {
             | Self::ToggleQuote
             | Self::ToggleBullet => "",
             Self::ToggleTask => "",
-            Self::Outline => "Ctrl+Shift+O",
+            Self::Outline => "Ctrl+Shift+O / F2",
             Self::FollowLink => "",
             Self::ToggleStats => "",
             Self::RecentFiles => "",

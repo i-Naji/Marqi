@@ -53,7 +53,7 @@ OPTIONS:
     -V, --version             Show version
 
 KEYS:
-    ^S save · ^Q quit · ^F find · ^P preview · ^⇧P commands
+    ^S save · ^Q quit · ^F find · ^P preview · ^⇧P or F1 commands
     Press ^G inside the editor for the full, scrollable reference.
 
 CONFIG (optional): ~/.config/marqi/config.toml — see marqi.example.toml
@@ -110,7 +110,8 @@ fn run_editor(path: Option<String>, config_path: Option<PathBuf>) -> Result<()> 
     app.offer_recovery();
     if app.prompt_view().is_none() && app.status.is_none() && config::take_first_run_hint() {
         app.status = Some(
-            "Tip: move into a block to edit its Markdown · Ctrl+Shift+P opens commands".to_string(),
+            "Tip: move into a block to edit its Markdown · Ctrl+Shift+P or F1 opens commands"
+                .to_string(),
         );
     }
 
