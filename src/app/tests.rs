@@ -402,6 +402,17 @@ fn asterisk_inserts_pair_and_skips_existing_closer() {
 }
 
 #[test]
+fn quotes_and_underscores_do_not_pair_inside_words() {
+    let mut a = app();
+    type_str(&mut a, "don't snake_case a < b");
+    assert_eq!(a.buffer.rope().to_string(), "don't snake_case a < b");
+
+    press(&mut a, KeyCode::Enter);
+    press(&mut a, KeyCode::Char('_'));
+    assert_eq!(a.buffer.rope().to_string(), "don't snake_case a < b\n__");
+}
+
+#[test]
 fn bracket_pair_skips_closer_and_redo_restores_inner_cursor() {
     let mut a = app();
     press(&mut a, KeyCode::Char('('));

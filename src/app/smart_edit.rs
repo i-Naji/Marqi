@@ -70,7 +70,9 @@ impl App {
             return;
         }
 
-        if let Some(close) = opening_pair(c) {
+        if let Some(close) = opening_pair(c)
+            && !self.pairs_inside_word(c)
+        {
             let at = self.cursor.byte;
             let mut replacement = String::with_capacity(c.len_utf8() + close.len_utf8());
             replacement.push(c);
@@ -285,6 +287,16 @@ impl App {
         (self.cursor.byte < rope.len_bytes())
             .then(|| rope.char(rope.byte_to_char(self.cursor.byte)))
     }
+
+    fn char_before_cursor(&self) -> Option<char> {
+        let rope = self.buffer.rope();
+        (self.cursor.byte > 0).then(|| rope.char(rope.byte_to_char(self.cursor.byte) - 1))
+    }
+
+    fn pairs_inside_word(&self, c: char) -> bool {
+        matches!(c, '\'' | '_' | '*' | '~')
+            && self.char_before_cursor().is_some_and(char::is_alphanumeric)
+    }
 }
 
 fn opening_pair(c: char) -> Option<char> {
@@ -296,7 +308,6 @@ fn opening_pair(c: char) -> Option<char> {
         '(' => Some(')'),
         '[' => Some(']'),
         '{' => Some('}'),
-        '<' => Some('>'),
         '"' => Some('"'),
         '\'' => Some('\''),
         _ => None,
@@ -304,10 +315,7 @@ fn opening_pair(c: char) -> Option<char> {
 }
 
 fn is_closing_pair_char(c: char) -> bool {
-    matches!(
-        c,
-        '*' | '_' | '~' | '`' | ')' | ']' | '}' | '>' | '"' | '\''
-    )
+    matches!(c, '*' | '_' | '~' | '`' | ')' | ']' | '}' | '"' | '\'')
 }
 
 fn parse_list_marker(line: &str) -> Option<ListMarker> {
