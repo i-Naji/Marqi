@@ -221,9 +221,18 @@ fn follow_link_resolves_references_and_confirms_external_urls() {
     a.cursor.byte = 6;
     a.run_action(Action::FollowLink);
     let prompt = a.prompt_view().expect("external URL confirmation");
+    assert!(prompt.text.starts_with("Open example.com?"));
     assert!(prompt.text.contains("https://example.com"));
     press(&mut a, KeyCode::Char('n'));
     assert_eq!(a.status.as_deref(), Some("Open cancelled"));
+
+    let long = format!("https://user@evil.example/{}?x=1", "a".repeat(200));
+    let mut a = app_with(&format!("[x]({long})\n"));
+    a.cursor.byte = 1;
+    a.run_action(Action::FollowLink);
+    let prompt = a.prompt_view().expect("external URL confirmation");
+    assert!(prompt.text.starts_with("Open evil.example?"));
+    press(&mut a, KeyCode::Char('n'));
 }
 
 #[test]

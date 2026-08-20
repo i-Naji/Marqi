@@ -165,7 +165,7 @@ impl App {
                 })
             }
             Prompt::ExternalUrl { url } => Some(PromptView {
-                text: format!("Open external URL {url}?  (y/n)"),
+                text: format!("Open {}?  (y/n)  {url}", url_host(url)),
                 cursor_col: None,
             }),
             Prompt::FilePath {
@@ -642,6 +642,14 @@ fn resolve_save_path(input: &str) -> Result<PathBuf> {
         });
     }
     Ok(PathBuf::from(trimmed))
+}
+
+fn url_host(url: &str) -> &str {
+    let rest = url.split_once("://").map_or(url, |(_, rest)| rest);
+    let authority = rest.split(['/', '?', '#']).next().unwrap_or(rest);
+    authority
+        .rsplit_once('@')
+        .map_or(authority, |(_, host)| host)
 }
 
 #[cfg(test)]
