@@ -402,6 +402,18 @@ fn asterisk_inserts_pair_and_skips_existing_closer() {
 }
 
 #[test]
+fn ctrl_h_deletes_backwards_in_every_preset() {
+    for preset in [Preset::Standard, Preset::Vim, Preset::Nano, Preset::Emacs] {
+        let mut a = app_with("ab");
+        a.preset = preset;
+        a.mode = Mode::Insert;
+        press(&mut a, KeyCode::End);
+        press_mod(&mut a, KeyCode::Char('h'), KeyModifiers::CONTROL);
+        assert_eq!(a.buffer.rope().to_string(), "a", "{preset:?}");
+    }
+}
+
+#[test]
 fn quotes_and_underscores_do_not_pair_inside_words() {
     let mut a = app();
     type_str(&mut a, "don't snake_case a < b");

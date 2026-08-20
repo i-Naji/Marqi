@@ -934,6 +934,10 @@ impl App {
                 KeyCode::Char('z') => Some(Action::Undo),
                 KeyCode::Char('y') => Some(Action::Redo),
                 KeyCode::Char('f') => Some(Action::Find),
+                KeyCode::Char('h') => {
+                    self.backspace();
+                    None
+                }
                 KeyCode::Left => {
                     self.do_motion(Motion::WordBack, shift);
                     None
@@ -992,6 +996,7 @@ impl App {
         let shift = key.modifiers.contains(KeyModifiers::SHIFT);
         match key.code {
             KeyCode::Esc => self.mode = Mode::Normal,
+            KeyCode::Char('h') if ctrl => self.backspace(),
             KeyCode::Char(c) if !ctrl => self.insert_char_smart(c),
             KeyCode::Enter => self.insert_newline_smart(),
             KeyCode::Tab => self.insert("\t"),
@@ -1149,6 +1154,7 @@ impl App {
             match (self.preset, key.code) {
                 // Universal-ish editing shortcuts.
                 (_, KeyCode::Char('z')) => self.run_action(Action::Undo),
+                (_, KeyCode::Char('h')) => self.backspace(),
                 // ^F find, plus ^W — nano's native "Where Is" (Emacs keeps
                 // C-f as forward-char and gets find on M-s).
                 (Preset::Nano, KeyCode::Char('f')) => self.run_action(Action::Find),
