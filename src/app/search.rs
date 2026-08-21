@@ -328,6 +328,11 @@ impl App {
                 self.history.break_run();
                 self.replace_range(found.start, found.end, replacement);
                 self.history.break_run();
+                if let Some((_, end)) = self.find_scope.as_mut()
+                    && found.end <= *end
+                {
+                    *end = *end + replacement.len() - (found.end - found.start);
+                }
                 self.find_restore = None;
                 self.find_step(query, true, true);
             }

@@ -1667,6 +1667,23 @@ fn find_can_stay_inside_the_original_selection() {
 }
 
 #[test]
+fn replace_keeps_the_selection_scope_in_step() {
+    let mut a = app_with("foo\nfoo foo");
+    a.selection_anchor = Some(0);
+    a.cursor.byte = 7;
+    press_mod(&mut a, KeyCode::Char('f'), KeyModifiers::CONTROL);
+    type_str(&mut a, "foo");
+    press_mod(&mut a, KeyCode::Char('s'), KeyModifiers::ALT);
+    press(&mut a, KeyCode::Tab);
+    type_str(&mut a, "foobar");
+    press(&mut a, KeyCode::Enter);
+    press(&mut a, KeyCode::Enter);
+    assert_eq!(a.buffer.rope().to_string(), "foobar\nfoobar foo");
+    let starts: Vec<usize> = a.search_matches("foo").iter().map(|m| m.start).collect();
+    assert_eq!(starts, vec![0, 7]);
+}
+
+#[test]
 fn replace_replaces_current_and_advances() {
     let mut a = app_with("foo bar foo");
     press_mod(&mut a, KeyCode::Char('f'), KeyModifiers::CONTROL);
