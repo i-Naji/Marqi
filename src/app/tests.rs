@@ -216,6 +216,15 @@ fn diagnostics_open_from_an_action_and_jump_to_the_issue() {
 }
 
 #[test]
+fn diagnostics_skip_brackets_inside_inline_code() {
+    let mut a = app_with("Use `matrix[i][j]` and `[^abc]` here.\n\nReal [broken][ref] one.\n");
+    a.run_action(Action::Diagnostics);
+    let items = a.diagnostic_items();
+    assert_eq!(items.len(), 1);
+    assert_eq!(items[0].line, 2);
+}
+
+#[test]
 fn follow_link_resolves_references_and_confirms_external_urls() {
     let mut a = app_with("See [site][docs].\n\n[docs]: https://example.com\n");
     a.cursor.byte = 6;
@@ -1025,6 +1034,22 @@ fn table_formatter_aligns_cells_and_preserves_escaped_pipes() {
         "  | Name | Note   |\r\n  | :--- | -----: |\r\n  | Ada  | a \\| b |\r\n"
     );
     a.run_action(Action::Undo);
+    assert_eq!(a.buffer.rope().to_string(), source);
+}
+
+#[test]
+fn table_formatter_leaves_prose_above_the_header_alone() {
+    let source = "Run `ls | wc`  now\n| A | B |\n|---|---|\n| 1 | 2 |\n";
+    let mut a = app_with(source);
+    a.cursor.byte = source.find("| 1").unwrap();
+    a.run_action(Action::FormatTable);
+    let out = a.buffer.rope().to_string();
+    assert!(out.starts_with("Run `ls | wc`  now\n| A"));
+    assert_ne!(out, source);
+
+    let mut a = app_with(source);
+    a.cursor.byte = 0;
+    a.run_action(Action::FormatTable);
     assert_eq!(a.buffer.rope().to_string(), source);
 }
 

@@ -172,6 +172,7 @@ fn reference_diagnostics(lines: &[&str], fenced: &[bool]) -> Vec<Diagnostic> {
         if DEFINITION.is_match(source) {
             continue;
         }
+        let source = &blank_code_spans(source);
         for capture in REFERENCE.captures_iter(source) {
             let target = if capture[2].is_empty() {
                 &capture[1]
@@ -196,6 +197,24 @@ fn reference_diagnostics(lines: &[&str], fenced: &[bool]) -> Vec<Diagnostic> {
         }
     }
     items
+}
+
+fn blank_code_spans(line: &str) -> String {
+    let mut out = String::with_capacity(line.len());
+    let mut rest = line;
+    while let Some(open) = rest.find('`') {
+        let run = rest[open..].len() - rest[open..].trim_start_matches('`').len();
+        let after = open + run;
+        let Some(close) = rest[after..].find(&"`".repeat(run)) else {
+            out.push_str(rest);
+            return out;
+        };
+        out.push_str(&rest[..open]);
+        out.extend(std::iter::repeat_n(' ', run + close + run));
+        rest = &rest[after + close + run..];
+    }
+    out.push_str(rest);
+    out
 }
 
 fn table_diagnostics(lines: &[&str], fenced: &[bool]) -> Vec<Diagnostic> {
