@@ -236,6 +236,10 @@ impl App {
         }
 
         let separator_line = (start + 1..=end).find(|line| self.is_separator_line(*line))?;
+        let start = separator_line - 1;
+        if current < start {
+            return None;
+        }
         let columns = (start..=end)
             .map(|line| self.table_cells_text(line).len())
             .max()
