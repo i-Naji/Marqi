@@ -1,6 +1,6 @@
 use super::App;
 use regex::Regex;
-use std::process::Command;
+use std::process::{Command, Stdio};
 use std::sync::LazyLock;
 
 static FOOTNOTE_REF: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\[\^([^\]]+)\]").unwrap());
@@ -120,11 +120,17 @@ pub(super) fn launch_url(url: &str) -> std::io::Result<()> {
     let mut command = Command::new("open");
     #[cfg(target_os = "windows")]
     let mut command = {
-        let mut command = Command::new("cmd");
-        command.args(["/C", "start", ""]);
+        let mut command = Command::new("rundll32");
+        command.arg("url.dll,FileProtocolHandler");
         command
     };
     #[cfg(all(unix, not(target_os = "macos")))]
     let mut command = Command::new("xdg-open");
-    command.arg(url).spawn().map(|_| ())
+    command
+        .arg(url)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .map(|_| ())
 }
