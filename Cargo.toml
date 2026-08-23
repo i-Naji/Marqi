@@ -42,6 +42,9 @@ trash = "5.2.6"
 unicode-segmentation = "1.13.3"
 unicode-width = "0.2.2"
 
+[target.'cfg(unix)'.dependencies]
+signal-hook = "0.3.18"
+
 [dev-dependencies]
 libc = "0.2.189"
 

@@ -24,6 +24,8 @@ mod view;
 use std::env;
 use std::io::{IsTerminal, Read, Write};
 use std::path::PathBuf;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use anyhow::{Context, Result};
 use crossterm::{
@@ -99,6 +101,12 @@ fn run_editor(path: Option<String>, config_path: Option<PathBuf>) -> Result<()> 
         }
     };
 
+    let stop = Arc::new(AtomicBool::new(false));
+    #[cfg(unix)]
+    for signal in [signal_hook::consts::SIGTERM, signal_hook::consts::SIGHUP] {
+        signal_hook::flag::register(signal, Arc::clone(&stop))?;
+    }
+
     let (config, config_warning) = load_config(config_path.as_deref());
     let mut app = App::with_config(buffer, &config);
     if let Err(error) = app.load_session() {
@@ -120,7 +128,7 @@ fn run_editor(path: Option<String>, config_path: Option<PathBuf>) -> Result<()> 
     if std::env::var_os("MARQI_TEST_PANIC_AFTER_INIT").is_some() {
         panic!("requested terminal cleanup probe");
     }
-    let result = run(&mut terminal, &mut app);
+    let result = run(&mut terminal, &mut app, &stop);
     let session_error = app.save_session().err();
     // Restore the terminal even if the run loop errored. A run-loop error is
     // the more informative of the two, so report it first.
@@ -297,18 +305,19 @@ impl Cli {
 }
 
 /// Render-on-event loop: draw, wait for the next event, react, repeat.
-fn run(terminal: &mut tui::Tui, app: &mut App) -> Result<()> {
-    while !app.should_quit {
+fn run(terminal: &mut tui::Tui, app: &mut App, stop: &AtomicBool) -> Result<()> {
+    while !app.should_quit && !stop.load(Ordering::Relaxed) {
         terminal.draw(|frame| ui::draw(frame, app))?;
         apply_cursor_shape(terminal, app)?;
         // Poll with a short timeout only while an auto-save may be pending;
-        // otherwise wait long (redrawing on timeout is a no-op diff). A
-        // `Resize` simply falls through and redraws, since `Terminal::draw`
-        // re-queries the terminal size each frame.
+        // otherwise wait a second so a termination signal is noticed soon
+        // (redrawing on timeout is a no-op diff). A `Resize` simply falls
+        // through and redraws, since `Terminal::draw` re-queries the terminal
+        // size each frame.
         let timeout = if app.wants_tick() {
             std::time::Duration::from_millis(500)
         } else {
-            std::time::Duration::from_secs(60)
+            std::time::Duration::from_secs(1)
         };
         if !event::poll(timeout)? {
             app.tick();

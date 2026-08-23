@@ -119,6 +119,23 @@ impl PtyChild {
         self.write(b"\x1b[?1;0c");
     }
 
+    fn wait_for_alternate_screen(&self) {
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while Instant::now() < deadline {
+            let entered = self
+                .output
+                .lock()
+                .unwrap()
+                .windows(8)
+                .any(|bytes| bytes == b"\x1b[?1049h");
+            if entered {
+                return;
+            }
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        panic!("Marqi did not enter the alternate screen");
+    }
+
     fn resize(&self, columns: u16, rows: u16) {
         let size = libc::winsize {
             ws_row: rows,
@@ -216,6 +233,15 @@ fn bracketed_paste_is_inserted_verbatim() {
     assert!(app.wait().success());
     assert_eq!(std::fs::read_to_string(path).unwrap(), "- a\n- bbody");
     std::fs::remove_dir_all(dir).ok();
+}
+
+#[test]
+fn sigterm_restores_the_terminal() {
+    let mut app = PtyChild::spawn(&[], false);
+    app.answer_terminal_queries();
+    app.wait_for_alternate_screen();
+    unsafe { libc::kill(app.child.id() as libc::pid_t, libc::SIGTERM) };
+    assert!(app.wait().success());
 }
 
 #[test]
