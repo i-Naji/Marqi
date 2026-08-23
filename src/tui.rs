@@ -11,8 +11,8 @@ use anyhow::Result;
 use crossterm::{
     cursor::SetCursorStyle,
     event::{
-        DisableMouseCapture, EnableMouseCapture, KeyboardEnhancementFlags,
-        PopKeyboardEnhancementFlags, PushKeyboardEnhancementFlags,
+        DisableBracketedPaste, DisableMouseCapture, EnableBracketedPaste, EnableMouseCapture,
+        KeyboardEnhancementFlags, PopKeyboardEnhancementFlags, PushKeyboardEnhancementFlags,
     },
 };
 use crossterm::{
@@ -44,7 +44,12 @@ fn init_after_raw_mode() -> Result<Tui> {
     let mut stdout = io::stdout();
     // Mouse capture enables click-to-position, drag-select, and wheel scroll.
     // (Terminal-level text selection still works with Shift held.)
-    execute!(stdout, EnterAlternateScreen, EnableMouseCapture)?;
+    execute!(
+        stdout,
+        EnterAlternateScreen,
+        EnableMouseCapture,
+        EnableBracketedPaste
+    )?;
     // Ask the terminal to report modified keys (Shift+Arrow, etc.) unambiguously
     // via the CSI-u protocol, where supported — needed for reliable selection.
     if matches!(supports_keyboard_enhancement(), Ok(true)) {
@@ -67,6 +72,7 @@ pub fn restore() -> Result<()> {
 trait RestoreOps {
     fn pop_keyboard_flags(&mut self);
     fn disable_mouse(&mut self) -> io::Result<()>;
+    fn disable_paste(&mut self) -> io::Result<()>;
     fn reset_cursor(&mut self) -> io::Result<()>;
     fn leave_screen(&mut self) -> io::Result<()>;
     fn disable_raw(&mut self) -> io::Result<()>;
@@ -83,6 +89,10 @@ impl RestoreOps for TerminalRestore {
 
     fn disable_mouse(&mut self) -> io::Result<()> {
         execute!(self.stdout, DisableMouseCapture)
+    }
+
+    fn disable_paste(&mut self) -> io::Result<()> {
+        execute!(self.stdout, DisableBracketedPaste)
     }
 
     fn reset_cursor(&mut self) -> io::Result<()> {
@@ -102,6 +112,7 @@ fn restore_with(ops: &mut impl RestoreOps) -> Result<()> {
     let mut first_error = None;
     ops.pop_keyboard_flags();
     remember_error(&mut first_error, ops.disable_mouse());
+    remember_error(&mut first_error, ops.disable_paste());
     remember_error(&mut first_error, ops.reset_cursor());
     remember_error(&mut first_error, ops.leave_screen());
     remember_error(&mut first_error, ops.disable_raw());
@@ -146,6 +157,11 @@ mod tests {
             Err(io::Error::other("mouse failed"))
         }
 
+        fn disable_paste(&mut self) -> io::Result<()> {
+            self.steps.push("paste");
+            Ok(())
+        }
+
         fn reset_cursor(&mut self) -> io::Result<()> {
             self.steps.push("cursor");
             Ok(())
@@ -167,7 +183,10 @@ mod tests {
         let mut ops = FailingRestore::default();
         let error = restore_with(&mut ops).unwrap_err();
 
-        assert_eq!(ops.steps, ["keyboard", "mouse", "cursor", "screen", "raw"]);
+        assert_eq!(
+            ops.steps,
+            ["keyboard", "mouse", "paste", "cursor", "screen", "raw"]
+        );
         assert!(error.to_string().contains("mouse failed"));
     }
 }

@@ -439,6 +439,21 @@ fn asterisk_inserts_pair_and_skips_existing_closer() {
 }
 
 #[test]
+fn terminal_paste_inserts_verbatim_in_one_step() {
+    let mut a = app_with("- x\n");
+    a.cursor.byte = 3;
+    a.paste_text("\r- a\r- b");
+    assert_eq!(a.buffer.rope().to_string(), "- x\n- a\n- b\n");
+    press_mod(&mut a, KeyCode::Char('z'), KeyModifiers::CONTROL);
+    assert_eq!(a.buffer.rope().to_string(), "- x\n");
+
+    press_mod(&mut a, KeyCode::Char('f'), KeyModifiers::CONTROL);
+    a.paste_text("a\nb");
+    assert!(a.prompt_view().unwrap().text.contains("ab"));
+    assert_eq!(a.buffer.rope().to_string(), "- x\n");
+}
+
+#[test]
 fn ctrl_h_deletes_backwards_in_every_preset() {
     for preset in [Preset::Standard, Preset::Vim, Preset::Nano, Preset::Emacs] {
         let mut a = app_with("ab");

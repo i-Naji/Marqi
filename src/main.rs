@@ -317,6 +317,7 @@ fn run(terminal: &mut tui::Tui, app: &mut App) -> Result<()> {
         match event::read()? {
             Event::Key(key) if key.kind == KeyEventKind::Press => app.handle_key(key),
             Event::Mouse(mouse) => app.handle_mouse(mouse),
+            Event::Paste(text) => app.paste_text(&text),
             _ => {}
         }
     }

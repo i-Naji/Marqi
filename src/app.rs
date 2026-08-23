@@ -1674,9 +1674,34 @@ impl App {
     /// Paste clipboard text, replacing the selection if there is one.
     fn paste(&mut self) {
         let text = self.clipboard.get();
+        self.paste_text(&text);
+    }
+
+    pub fn paste_text(&mut self, text: &str) {
         if text.is_empty() {
             return;
         }
+        if self.prompt.is_some()
+            || self.menu.is_some()
+            || self.palette.is_some()
+            || self.outline.is_some()
+            || self.diagnostics.is_some()
+            || self.recent_picker.is_some()
+        {
+            for c in text.chars().filter(|c| !c.is_control()) {
+                self.handle_key(KeyEvent::from(KeyCode::Char(c)));
+            }
+            return;
+        }
+        if self.mode.is_read() {
+            return;
+        }
+        let text = text
+            .replace("\r\n", "\n")
+            .replace('\r', "\n")
+            .replace('\n', self.buffer.newline());
+        self.pending = None;
+        self.follow_cursor = true;
         self.history.break_run();
         self.insert(&text);
         self.history.break_run();

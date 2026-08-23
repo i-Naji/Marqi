@@ -200,6 +200,25 @@ fn edits_and_saves_a_file() {
 }
 
 #[test]
+fn bracketed_paste_is_inserted_verbatim() {
+    let dir = temp_dir("paste");
+    let path = dir.join("note.md");
+    std::fs::write(&path, "body").unwrap();
+    let path_text = path.to_string_lossy().to_string();
+    let mut app = PtyChild::spawn(&[&path_text], false);
+    app.answer_terminal_queries();
+    std::thread::sleep(Duration::from_millis(150));
+    app.write(b"\x1b[200~- a\n- b\x1b[201~");
+    std::thread::sleep(Duration::from_millis(50));
+    app.write(b"\x1b[115;5u");
+    std::thread::sleep(Duration::from_millis(100));
+    app.write(b"\x1b[113;5u");
+    assert!(app.wait().success());
+    assert_eq!(std::fs::read_to_string(path).unwrap(), "- a\n- bbody");
+    std::fs::remove_dir_all(dir).ok();
+}
+
+#[test]
 fn panic_restores_terminal_state() {
     let mut app = PtyChild::spawn(&[], true);
     app.answer_terminal_queries();
