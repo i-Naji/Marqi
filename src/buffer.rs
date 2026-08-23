@@ -168,9 +168,9 @@ impl TextBuffer {
             .recovery_path()
             .context("recovery directory is unavailable")?;
         if let Some(parent) = path.parent() {
-            fs::create_dir_all(parent).with_context(|| format!("creating {}", parent.display()))?;
+            create_private_dir(parent).with_context(|| format!("creating {}", parent.display()))?;
         }
-        write_atomic(&path, &self.rope)
+        write_atomic_with_mode(&path, &self.rope, Some(0o600))
             .with_context(|| format!("writing recovery {}", path.display()))
     }
 
@@ -306,7 +306,7 @@ impl TextBuffer {
             None => self.name.clone().unwrap_or_else(|| "scratch".to_string()),
         };
         Some(
-            dirs.cache_dir()
+            dirs.data_local_dir()
                 .join("recovery")
                 .join(format!("{:016x}.md", stable_hash(identity.as_bytes()))),
         )
@@ -354,6 +354,10 @@ fn detect_crlf(text: &str) -> bool {
 /// links to the old content are left behind (symlinks are handled — the path is
 /// resolved first, so the link's *target* is replaced, not the link).
 pub(crate) fn write_atomic(path: &Path, rope: &Rope) -> Result<()> {
+    write_atomic_with_mode(path, rope, None)
+}
+
+fn write_atomic_with_mode(path: &Path, rope: &Rope, mode: Option<u32>) -> Result<()> {
     // Resolve symlinks so saving through one replaces the real file instead of
     // severing the link. A path that does not exist yet resolves to itself.
     let path = &fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
@@ -370,7 +374,7 @@ pub(crate) fn write_atomic(path: &Path, rope: &Rope) -> Result<()> {
     let tmp = dir.join(format!(".{stem}.marqi-{}.tmp", std::process::id()));
 
     let streamed = (|| -> Result<()> {
-        let file = create_temp_file(&tmp, path)
+        let file = create_temp_file(&tmp, path, mode)
             .with_context(|| format!("creating a temp file in {}", dir.display()))?;
         let mut writer = BufWriter::new(file);
         rope.write_to(&mut writer)?;
@@ -389,7 +393,9 @@ pub(crate) fn write_atomic(path: &Path, rope: &Rope) -> Result<()> {
 
     // The temp file was created with at most the target's permissions (the
     // umask may have stripped bits); now copy them exactly.
-    if let Ok(meta) = fs::metadata(path) {
+    if mode.is_none()
+        && let Ok(meta) = fs::metadata(path)
+    {
         let _ = fs::set_permissions(&tmp, meta.permissions());
     }
 
@@ -412,7 +418,7 @@ pub(crate) fn write_atomic(path: &Path, rope: &Rope) -> Result<()> {
 /// Unix it starts with the target's own mode (0666 for a new file), filtered by
 /// the umask as usual — so a 0600 private file is never world-readable while
 /// its content streams in.
-fn create_temp_file(tmp: &Path, target: &Path) -> std::io::Result<fs::File> {
+fn create_temp_file(tmp: &Path, target: &Path, mode: Option<u32>) -> std::io::Result<fs::File> {
     // A stale temp file from a crashed earlier run (same PID) would make
     // `create_new` fail; it holds no precious data, so clear it.
     let _ = fs::remove_file(tmp);
@@ -421,14 +427,24 @@ fn create_temp_file(tmp: &Path, target: &Path) -> std::io::Result<fs::File> {
     #[cfg(unix)]
     {
         use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
-        let mode = fs::metadata(target)
-            .map(|m| m.permissions().mode())
-            .unwrap_or(0o666);
+        let mode = mode.unwrap_or_else(|| {
+            fs::metadata(target)
+                .map(|m| m.permissions().mode())
+                .unwrap_or(0o666)
+        });
         opts.mode(mode & 0o777);
     }
     #[cfg(not(unix))]
-    let _ = target;
+    let _ = (target, mode);
     opts.open(tmp)
+}
+
+fn create_private_dir(dir: &Path) -> std::io::Result<()> {
+    let mut builder = fs::DirBuilder::new();
+    builder.recursive(true);
+    #[cfg(unix)]
+    std::os::unix::fs::DirBuilderExt::mode(&mut builder, 0o700);
+    builder.create(dir)
 }
 
 /// Rename `tmp` over `path`. On Windows, antivirus scanners, search indexers,
@@ -458,6 +474,24 @@ mod tests {
         let mut p = std::env::temp_dir();
         p.push(format!("marqi_test_{tag}_{}.md", std::process::id()));
         p
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn recovery_snapshots_are_private() {
+        use std::os::unix::fs::PermissionsExt;
+        let path = temp_path("private_recovery");
+        fs::write(&path, "x").unwrap();
+        let mut buf = TextBuffer::from_path(&path).unwrap();
+        buf.restore_recovery("secret");
+        buf.write_recovery().unwrap();
+
+        let snapshot = buf.recovery_path().unwrap();
+        let mode = |p: &Path| fs::metadata(p).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode(&snapshot), 0o600);
+        assert_eq!(mode(snapshot.parent().unwrap()), 0o700);
+        buf.discard_recovery().unwrap();
+        fs::remove_file(&path).ok();
     }
 
     #[test]
