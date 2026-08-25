@@ -62,7 +62,15 @@ CONFIG (optional): ~/.config/marqi/config.toml — see marqi.example.toml
 ";
 
 fn main() -> Result<()> {
-    let cli = Cli::parse(env::args().skip(1))?;
+    let args = env::args_os()
+        .skip(1)
+        .map(|arg| {
+            arg.into_string().map_err(|arg| {
+                anyhow::anyhow!("argument is not valid UTF-8: {}", arg.to_string_lossy())
+            })
+        })
+        .collect::<Result<Vec<_>>>()?;
+    let cli = Cli::parse(args)?;
 
     match cli.action {
         Action::Help => {
@@ -236,6 +244,12 @@ impl Cli {
         };
 
         while let Some(arg) = args.next() {
+            let (arg, mut inline) = match arg.split_once('=') {
+                Some((name, value)) if matches!(name, "--width" | "--config" | "-c") => {
+                    (name.to_string(), Some(value.to_string()))
+                }
+                _ => (arg, None),
+            };
             match arg.as_str() {
                 "-h" | "--help" => {
                     return Ok(Self {
@@ -251,8 +265,9 @@ impl Cli {
                 }
                 "-r" | "--render" => render = true,
                 "--width" => {
-                    let value = args
-                        .next()
+                    let value = inline
+                        .take()
+                        .or_else(|| args.next())
                         .context("usage: marqi -r FILE --width COLUMNS")?;
                     let width = value
                         .parse::<usize>()
@@ -263,8 +278,9 @@ impl Cli {
                 }
                 "--html" => render_html = true,
                 "-c" | "--config" => {
-                    let path = args
-                        .next()
+                    let path = inline
+                        .take()
+                        .or_else(|| args.next())
                         .filter(|path| !path.starts_with('-'))
                         .context("usage: marqi -c <config.toml or dir> [FILE]")?;
                     config_path = Some(PathBuf::from(path));
@@ -405,6 +421,19 @@ mod tests {
                 assert_eq!(options.width, Some(42));
                 assert!(options.html);
             }
+            _ => panic!("expected render action"),
+        }
+    }
+
+    #[test]
+    fn parses_inline_option_values() {
+        let cli = parse(&["--render", "-", "--width=42", "--config=cfg.toml"]);
+        assert_eq!(
+            cli.config_path.as_deref(),
+            Some(std::path::Path::new("cfg.toml"))
+        );
+        match cli.action {
+            Action::Render(options) => assert_eq!(options.width, Some(42)),
             _ => panic!("expected render action"),
         }
     }
