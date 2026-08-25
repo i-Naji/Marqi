@@ -1379,7 +1379,7 @@ impl App {
     pub fn wants_tick(&self) -> bool {
         self.buffer.modified()
             && self.prompt.is_none()
-            && (self.recovery_written_version != self.version
+            && ((self.recovery_content.is_none() && self.recovery_written_version != self.version)
                 || (self.auto_save && self.buffer.has_path()))
     }
 
@@ -1400,7 +1400,7 @@ impl App {
         if !idle {
             return;
         }
-        if self.recovery_written_version != self.version {
+        if self.recovery_content.is_none() && self.recovery_written_version != self.version {
             match self.buffer.write_recovery() {
                 Ok(()) => self.recovery_written_version = self.version,
                 Err(error) => {
@@ -1428,6 +1428,7 @@ impl App {
         match self.buffer.save() {
             Ok(()) => {
                 self.history.mark_saved();
+                self.recovery_content = None;
                 self.auto_save_retry_at = None;
                 self.status = Some("Auto-saved".to_string());
             }
@@ -1789,6 +1790,7 @@ impl App {
         self.status = Some(match self.buffer.save() {
             Ok(()) => {
                 self.history.mark_saved();
+                self.recovery_content = None;
                 self.auto_save_retry_at = None;
                 "Saved".to_string()
             }
@@ -1800,6 +1802,7 @@ impl App {
         self.status = Some(match self.buffer.save_force() {
             Ok(()) => {
                 self.history.mark_saved();
+                self.recovery_content = None;
                 self.auto_save_retry_at = None;
                 "Saved".to_string()
             }
@@ -1809,6 +1812,9 @@ impl App {
 
     fn reload_buffer(&mut self) -> anyhow::Result<()> {
         self.buffer.reload()?;
+        if self.recovery_content.is_none() {
+            let _ = self.buffer.discard_recovery();
+        }
         self.history = History::new();
         self.reset_after_buffer_change();
         Ok(())

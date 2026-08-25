@@ -1961,6 +1961,52 @@ fn recovery_restores_an_unsaved_document() {
 }
 
 #[test]
+fn deferred_recovery_survives_new_snapshots() {
+    let path = std::env::temp_dir().join(format!("marqi_recovery_defer_{}.md", std::process::id()));
+    std::fs::write(&path, "original").unwrap();
+    let mut edited = App::with_config(TextBuffer::from_path(&path).unwrap(), &Config::default());
+    edited.clipboard = Clipboard::internal_only();
+    type_str(&mut edited, "local ");
+    edited.last_edit = Some(Instant::now() - Duration::from_secs(3));
+    edited.tick();
+
+    let mut reopened = App::with_config(TextBuffer::from_path(&path).unwrap(), &Config::default());
+    reopened.clipboard = Clipboard::internal_only();
+    reopened.offer_recovery();
+    press(&mut reopened, KeyCode::Esc);
+    type_str(&mut reopened, "new ");
+    reopened.last_edit = Some(Instant::now() - Duration::from_secs(3));
+    reopened.tick();
+
+    assert_eq!(
+        reopened.buffer.load_recovery().unwrap().as_deref(),
+        Some("local original")
+    );
+    reopened.buffer.discard_recovery().unwrap();
+    std::fs::remove_file(&path).ok();
+}
+
+#[test]
+fn quitting_without_saving_discards_the_snapshot() {
+    let path = std::env::temp_dir().join(format!("marqi_recovery_quit_{}.md", std::process::id()));
+    std::fs::write(&path, "original").unwrap();
+    let mut a = App::with_config(TextBuffer::from_path(&path).unwrap(), &Config::default());
+    a.clipboard = Clipboard::internal_only();
+    type_str(&mut a, "local ");
+    a.last_edit = Some(Instant::now() - Duration::from_secs(3));
+    a.tick();
+    let fresh = TextBuffer::from_path(&path).unwrap();
+    assert!(fresh.load_recovery().unwrap().is_some());
+
+    press_mod(&mut a, KeyCode::Char('q'), KeyModifiers::CONTROL);
+    press(&mut a, KeyCode::Char('y'));
+    assert!(a.should_quit);
+    let fresh = TextBuffer::from_path(&path).unwrap();
+    assert!(fresh.load_recovery().unwrap().is_none());
+    std::fs::remove_file(&path).ok();
+}
+
+#[test]
 fn cmd_super_modifier_acts_as_ctrl() {
     let mut a = app_with("hello");
     type_str(&mut a, "x");

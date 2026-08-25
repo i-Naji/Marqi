@@ -268,7 +268,12 @@ impl App {
 
     fn confirm_quit_key(&mut self, key: KeyEvent) {
         match key.code {
-            KeyCode::Char('y') | KeyCode::Char('Y') => self.should_quit = true,
+            KeyCode::Char('y') | KeyCode::Char('Y') => {
+                if self.recovery_content.is_none() {
+                    let _ = self.buffer.discard_recovery();
+                }
+                self.should_quit = true;
+            }
             KeyCode::Char('w') | KeyCode::Char('W') => {
                 // Save first; `save` opens the save-as prompt for an unnamed
                 // buffer, in which case the quit is abandoned and the user can
@@ -559,6 +564,7 @@ impl App {
             Ok(()) => {
                 self.prompt = None;
                 self.history.mark_saved();
+                self.recovery_content = None;
                 self.auto_save_retry_at = None;
                 self.status = Some("Saved".to_string());
             }
