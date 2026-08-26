@@ -6,6 +6,7 @@
 //! on framework conveniences) so the "no leaked raw mode" guarantee is obvious.
 
 use std::io::{self, Stdout};
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use anyhow::Result;
 use crossterm::{
@@ -40,6 +41,8 @@ pub fn init() -> Result<Tui> {
     })
 }
 
+static KEYBOARD_FLAGS_PUSHED: AtomicBool = AtomicBool::new(false);
+
 fn init_after_raw_mode() -> Result<Tui> {
     let mut stdout = io::stdout();
     // Mouse capture enables click-to-position, drag-select, and wheel scroll.
@@ -52,11 +55,14 @@ fn init_after_raw_mode() -> Result<Tui> {
     )?;
     // Ask the terminal to report modified keys (Shift+Arrow, etc.) unambiguously
     // via the CSI-u protocol, where supported — needed for reliable selection.
-    if matches!(supports_keyboard_enhancement(), Ok(true)) {
-        let _ = execute!(
+    if matches!(supports_keyboard_enhancement(), Ok(true))
+        && execute!(
             stdout,
             PushKeyboardEnhancementFlags(KeyboardEnhancementFlags::DISAMBIGUATE_ESCAPE_CODES)
-        );
+        )
+        .is_ok()
+    {
+        KEYBOARD_FLAGS_PUSHED.store(true, Ordering::Relaxed);
     }
     let terminal = Terminal::new(CrosstermBackend::new(stdout))?;
     Ok(terminal)
@@ -84,7 +90,9 @@ struct TerminalRestore {
 
 impl RestoreOps for TerminalRestore {
     fn pop_keyboard_flags(&mut self) {
-        let _ = execute!(self.stdout, PopKeyboardEnhancementFlags);
+        if KEYBOARD_FLAGS_PUSHED.swap(false, Ordering::Relaxed) {
+            let _ = execute!(self.stdout, PopKeyboardEnhancementFlags);
+        }
     }
 
     fn disable_mouse(&mut self) -> io::Result<()> {
