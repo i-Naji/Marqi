@@ -57,9 +57,15 @@ OPTIONS:
 KEYS:
     ^S save · ^Q quit · ^F find · ^P preview · ^⇧P or F1 commands
     Press ^G inside the editor for the full, scrollable reference.
-
-CONFIG (optional): ~/.config/marqi/config.toml — see marqi.example.toml
 ";
+
+fn help() -> String {
+    let config = config::Config::path().map_or_else(
+        || "config.toml".to_string(),
+        |path| path.display().to_string(),
+    );
+    format!("{HELP}\nCONFIG (optional): {config} — see marqi.example.toml\n")
+}
 
 fn main() -> Result<()> {
     let args = env::args_os()
@@ -74,7 +80,7 @@ fn main() -> Result<()> {
 
     match cli.action {
         Action::Help => {
-            print!("{HELP}");
+            print!("{}", help());
             return Ok(());
         }
         Action::Version => {
@@ -238,7 +244,7 @@ impl Cli {
 
         let mut positional = |arg: String| -> Result<()> {
             if file.replace(arg).is_some() {
-                anyhow::bail!("unexpected extra argument\n\n{HELP}");
+                anyhow::bail!("unexpected extra argument\n\n{}", help());
             }
             Ok(())
         };
@@ -292,7 +298,9 @@ impl Cli {
                     }
                 }
                 "-" => positional(arg)?,
-                _ if arg.starts_with('-') => anyhow::bail!("unknown option: {arg}\n\n{HELP}"),
+                _ if arg.starts_with('-') => {
+                    anyhow::bail!("unknown option: {arg}\n\n{}", help())
+                }
                 _ => positional(arg)?,
             }
         }
