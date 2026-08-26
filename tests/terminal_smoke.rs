@@ -60,7 +60,8 @@ impl PtyChild {
             .stdout(Stdio::from(slave.try_clone().unwrap()))
             .stderr(Stdio::from(slave.try_clone().unwrap()))
             .env("TERM", "xterm-256color")
-            .env("XDG_CONFIG_HOME", config_root);
+            .env("XDG_CONFIG_HOME", &config_root)
+            .env("HOME", &config_root);
         if panic_after_init {
             command.env("MARQI_TEST_PANIC_AFTER_INIT", "1");
         }
