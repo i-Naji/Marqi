@@ -12,9 +12,13 @@ const MAX_RECENT_FILES: usize = 20;
 #[derive(Clone, Serialize, Deserialize)]
 pub struct RecentFile {
     pub(super) path: String,
+    #[serde(default)]
     cursor: usize,
+    #[serde(default)]
     focus_scroll: usize,
+    #[serde(default)]
     raw_scroll: usize,
+    #[serde(default)]
     read_scroll: usize,
 }
 
@@ -268,6 +272,13 @@ mod tests {
         let matches = picker.matches(&files);
         assert_eq!(matches.len(), 1);
         assert_eq!(matches[0].path, "/notes/alpha.md");
+    }
+
+    #[test]
+    fn recent_entries_tolerate_missing_fields() {
+        let entry: RecentFile = toml::from_str("path = \"/notes/alpha.md\"\n").unwrap();
+        assert_eq!(entry.path, "/notes/alpha.md");
+        assert_eq!(entry.cursor, 0);
     }
 
     #[test]
