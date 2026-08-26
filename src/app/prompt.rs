@@ -439,15 +439,16 @@ impl App {
                 Err(anyhow::anyhow!("{} is not a file", path.display()))
             }
             FilePathKind::Open => self.open_file_path(path.clone()),
-            FilePathKind::Rename
-                if self.buffer.path().is_some_and(|current| {
-                    super::session::path_key(current) == super::session::path_key(&path)
-                }) =>
-            {
+            FilePathKind::Rename if self.buffer.path() == Some(path.as_path()) => {
                 self.status = Some("File name unchanged".to_string());
                 return;
             }
-            FilePathKind::Rename if path.exists() => {
+            FilePathKind::Rename
+                if path.exists()
+                    && !self.buffer.path().is_some_and(|current| {
+                        super::session::path_key(current) == super::session::path_key(&path)
+                    }) =>
+            {
                 Err(anyhow::anyhow!("{} already exists", path.display()))
             }
             FilePathKind::Rename => self.rename_file_path(path.clone()),

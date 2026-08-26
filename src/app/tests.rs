@@ -1271,6 +1271,30 @@ fn rename_file_prompt_moves_the_current_file() {
 }
 
 #[test]
+fn rename_file_prompt_allows_a_case_only_change() {
+    let original = std::env::temp_dir().join(format!("marqi_case_{}.md", std::process::id()));
+    let renamed = std::env::temp_dir().join(format!("marqi_CASE_{}.md", std::process::id()));
+    std::fs::write(&original, "text").unwrap();
+    let mut a = App::new(TextBuffer::from_path(&original).unwrap());
+
+    a.run_action(Action::RenameFile);
+    press(&mut a, KeyCode::Home);
+    for _ in 0..original.to_string_lossy().len() {
+        press(&mut a, KeyCode::Delete);
+    }
+    type_str(&mut a, renamed.to_str().unwrap());
+    press(&mut a, KeyCode::Enter);
+
+    assert_eq!(a.buffer.path(), Some(renamed.as_path()));
+    assert!(
+        std::fs::read_dir(std::env::temp_dir())
+            .unwrap()
+            .any(|entry| { entry.unwrap().file_name() == renamed.file_name().unwrap() })
+    );
+    std::fs::remove_file(renamed).ok();
+}
+
+#[test]
 fn trash_file_requires_confirmation() {
     let path = std::env::temp_dir().join(format!("marqi_trash_{}.md", std::process::id()));
     std::fs::write(&path, "text").unwrap();
