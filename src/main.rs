@@ -199,13 +199,25 @@ fn render_to_stdout(options: &RenderOptions, config_path: Option<&std::path::Pat
     let mut output = std::io::BufWriter::new(std::io::stdout().lock());
     for line in render_preview(&source, width, &theme, &highlighter) {
         let text: String = line.spans.iter().map(|s| s.content.as_ref()).collect();
-        match writeln!(output, "{text}") {
+        match writeln!(output, "{}", printable(&text)) {
             Ok(()) => {}
             Err(error) if error.kind() == std::io::ErrorKind::BrokenPipe => return Ok(()),
             Err(error) => return Err(error.into()),
         }
     }
     Ok(())
+}
+
+fn printable(text: &str) -> String {
+    text.chars()
+        .map(|c| {
+            if c.is_control() && c != '\t' {
+                '\u{fffd}'
+            } else {
+                c
+            }
+        })
+        .collect()
 }
 
 fn load_config(config_path: Option<&std::path::Path>) -> (config::Config, Option<String>) {
@@ -431,6 +443,11 @@ mod tests {
             }
             _ => panic!("expected render action"),
         }
+    }
+
+    #[test]
+    fn render_output_strips_control_characters() {
+        assert_eq!(printable("a\x1b]0;x\x07b\tc"), "a\u{fffd}]0;x\u{fffd}b\tc");
     }
 
     #[test]
