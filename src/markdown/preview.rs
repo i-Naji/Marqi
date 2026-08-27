@@ -72,10 +72,13 @@ impl ActiveLeaf {
     }
 }
 
+const MAX_QUOTE_DEPTH: usize = 64;
+
 struct Renderer<'r> {
     theme: &'r MarkdownTheme,
     highlighter: &'r CodeHighlighter,
     active: Option<&'r ActiveLeaf>,
+    depth: Cell<usize>,
 }
 
 /// Parse `source` and render the whole document to styled lines for `width`.
@@ -104,6 +107,7 @@ pub fn render_rows(
         theme,
         highlighter,
         active: None,
+        depth: Cell::new(0),
     };
 
     let mut out = Vec::new();
@@ -126,6 +130,7 @@ pub fn render_block_node<'a>(
         theme,
         highlighter,
         active: None,
+        depth: Cell::new(0),
     };
     let mut out = Vec::new();
     renderer.render_block(node, width.max(1), &mut out);
@@ -146,6 +151,7 @@ pub fn render_block_with_hole<'a>(
         theme,
         highlighter,
         active: Some(active),
+        depth: Cell::new(0),
     };
     let mut out = Vec::new();
     renderer.render_block(node, width.max(1), &mut out);
@@ -239,7 +245,14 @@ impl<'r> Renderer<'r> {
             NodeValue::BlockQuote | NodeValue::MultilineBlockQuote(_) => {
                 let inner_w = width.saturating_sub(2).max(1);
                 let mut inner = Vec::new();
-                self.render_block_children(node, inner_w, &mut inner, true);
+                if self.depth.get() < MAX_QUOTE_DEPTH {
+                    self.depth.set(self.depth.get() + 1);
+                    self.render_block_children(node, inner_w, &mut inner, true);
+                    self.depth.set(self.depth.get() - 1);
+                } else {
+                    let ellipsis = Span::styled("\u{2026}", self.theme.quote);
+                    inner.push(Row::unlabeled(Line::from(ellipsis)));
+                }
                 let bar = vec![Span::styled("\u{2503} ", self.theme.quote_bar)];
                 let inner = restyle(inner, self.theme.text, self.theme.quote);
                 out.extend(prefix_lines(inner, bar.clone(), bar));
@@ -893,6 +906,13 @@ fn shrink_to_fit(col_w: &mut [usize], budget: usize) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn deeply_nested_quotes_render_without_overflowing() {
+        let src = format!("{} deep", ">".repeat(20_000));
+        let out = render_plain(&src, 40);
+        assert!(out.contains('\u{2026}'));
+    }
 
     fn render_plain(src: &str, width: usize) -> String {
         let theme = MarkdownTheme::default();
