@@ -290,8 +290,8 @@ impl Cli {
                     let width = value
                         .parse::<usize>()
                         .ok()
-                        .filter(|width| *width > 0)
-                        .context("render width must be a positive integer")?;
+                        .filter(|width| (1..=10_000).contains(width))
+                        .context("render width must be between 1 and 10000")?;
                     render_width = Some(width);
                 }
                 "--html" => render_html = true,
@@ -466,6 +466,7 @@ mod tests {
     #[test]
     fn render_options_require_render_mode_and_valid_width() {
         assert!(Cli::parse(["--width", "0", "doc.md"].map(String::from)).is_err());
+        assert!(Cli::parse(["-r", "doc.md", "--width", "20000"].map(String::from)).is_err());
         assert!(Cli::parse(["--html", "doc.md"].map(String::from)).is_err());
     }
 

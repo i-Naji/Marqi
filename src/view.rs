@@ -1786,7 +1786,10 @@ fn raw_row(
     active_bg: Color,
     sel: Option<((usize, usize), Color)>,
 ) -> Line<'static> {
-    let text = rope.line(row.line).to_string();
+    let text = rope
+        .line(row.line)
+        .byte_slice(row.byte_start..row.byte_end)
+        .to_string();
     let mut items: Vec<(String, Style)> = Vec::with_capacity(row.cells.len());
     for cell in &row.cells {
         let byte = line_start + cell.byte();
@@ -1802,9 +1805,11 @@ fn raw_row(
         {
             style = style.bg(color);
         }
-        let cluster = &text[cell.byte()..cell.byte_end()];
+        let cluster = &text[cell.byte() - row.byte_start..cell.byte_end() - row.byte_start];
         let display = if cluster == "\t" {
             " ".repeat(cell.width as usize)
+        } else if cluster.chars().all(char::is_control) {
+            "\u{fffd}".to_string()
         } else {
             cluster.to_string()
         };

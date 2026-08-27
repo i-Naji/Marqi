@@ -128,9 +128,14 @@ impl CodeHighlighter {
         for (i, line) in LinesWithEndings::from(code).enumerate() {
             // On a highlight error (fancy-regex can fail on pathological
             // lines) fall back to the unstyled text — never drop the line.
-            let ranges = highlighter
-                .highlight_line(line, &self.syntax_set)
-                .unwrap_or_else(|_| vec![(syntect::highlighting::Style::default(), line)]);
+            let plain = || vec![(syntect::highlighting::Style::default(), line)];
+            let ranges = if line.len() > 10_000 {
+                plain()
+            } else {
+                highlighter
+                    .highlight_line(line, &self.syntax_set)
+                    .unwrap_or_else(|_| plain())
+            };
             // Flatten into (grapheme, style) for width-aware hard wrapping.
             let mut graphemes: Vec<(String, Style)> = Vec::new();
             for (syn_style, text) in ranges {
