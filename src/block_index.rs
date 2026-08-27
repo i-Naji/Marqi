@@ -765,6 +765,22 @@ mod fuzz {
     }
 
     #[test]
+    fn form_feeds_do_not_shift_block_lines() {
+        let rope = Rope::from_str("a\x0cb\n\n# H\n");
+        let (blocks, _) = parse_blocks(&rope);
+        let heading = blocks
+            .iter()
+            .find(|block| block.kind == BlockKind::Heading)
+            .unwrap();
+        assert_eq!(heading.start_line, 2);
+        assert_eq!(rope.byte_to_line(heading.start_byte), 2);
+        assert_eq!(
+            source_slice(&rope, heading.start_byte, heading.end_byte).trim_end(),
+            "# H"
+        );
+    }
+
+    #[test]
     fn windowed_reparse_matches_the_oracle_after_every_edit() {
         for seed in [0x5EA7_u64, 42] {
             let mut rng = XorShift::new(seed);

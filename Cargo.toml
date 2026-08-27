@@ -30,7 +30,7 @@ directories = "6.0.0"
 # on this (see `ui::tests::menu_repaints_trailing_cells_of_wide_chars`).
 ratatui = "0.30.2"
 regex = "1.13.1"
-ropey = "1.6.1"
+ropey = { version = "1.6.1", default-features = false, features = ["simd", "cr_lines"] }
 serde = { version = "1.0.229", features = ["derive"] }
 syntect = { version = "5.3.0", default-features = false, features = ["default-fancy"] }
 # Startup OSC 11 background query for the "auto" theme variant: queries
