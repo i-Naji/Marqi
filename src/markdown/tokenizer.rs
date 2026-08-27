@@ -181,6 +181,7 @@ fn inline_scan(line: &str, out: &mut [Style], start: usize, end: usize, theme: &
     let base = theme.text;
     let mut i = start;
     let (mut bold, mut italic, mut strike) = (false, false, false);
+    let mut no_bracket_close = false;
 
     while i < end {
         match bytes[i] {
@@ -192,16 +193,17 @@ fn inline_scan(line: &str, out: &mut [Style], start: usize, end: usize, theme: &
                     fill(out, close, close + run, theme.marker);
                     i = close + run;
                 } else {
-                    out[i] = base;
-                    i += 1;
+                    fill(out, i, i + run, base);
+                    i += run;
                 }
             }
             b'*' => {
                 let run = run_len(bytes, i, end, b'*');
                 if run >= 2 {
                     bold = !bold;
-                    fill(out, i, i + 2, theme.marker);
-                    i += 2;
+                    italic ^= run % 2 == 1;
+                    fill(out, i, i + run, theme.marker);
+                    i += run;
                 } else {
                     italic = !italic;
                     out[i] = theme.marker;
@@ -212,8 +214,9 @@ fn inline_scan(line: &str, out: &mut [Style], start: usize, end: usize, theme: &
                 let run = run_len(bytes, i, end, b'_');
                 if run >= 2 {
                     bold = !bold;
-                    fill(out, i, i + 2, theme.marker);
-                    i += 2;
+                    italic ^= run % 2 == 1;
+                    fill(out, i, i + run, theme.marker);
+                    i += run;
                 } else if underscore_opens_emphasis(line, i) {
                     italic = !italic;
                     out[i] = theme.marker;
@@ -226,12 +229,13 @@ fn inline_scan(line: &str, out: &mut [Style], start: usize, end: usize, theme: &
                 }
             }
             b'~' if run_len(bytes, i, end, b'~') >= 2 => {
+                let run = run_len(bytes, i, end, b'~');
                 strike = !strike;
-                fill(out, i, i + 2, theme.marker);
-                i += 2;
+                fill(out, i, i + run, theme.marker);
+                i += run;
             }
             b'[' => {
-                if let Some(rb) = find(bytes, i + 1, end, b']') {
+                if !no_bracket_close && let Some(rb) = find(bytes, i + 1, end, b']') {
                     fill(out, i, i + 1, theme.marker);
                     fill(out, i + 1, rb, theme.link);
                     out[rb] = theme.marker;
@@ -244,6 +248,7 @@ fn inline_scan(line: &str, out: &mut [Style], start: usize, end: usize, theme: &
                         i = rp + 1;
                     }
                 } else {
+                    no_bracket_close = true;
                     out[i] = base;
                     i += 1;
                 }
@@ -405,6 +410,16 @@ mod tests {
             src.len(),
             "must be lossless: one style per byte"
         );
+    }
+
+    #[test]
+    fn long_marker_runs_tokenize_in_one_pass() {
+        let theme = MarkdownTheme::default();
+        for marker in ["*", "`", "[", "~"] {
+            let src = format!("a{}b\n", marker.repeat(100_000));
+            let styles = highlight(&src, &theme);
+            assert_eq!(styles.len(), src.len());
+        }
     }
 
     #[test]
