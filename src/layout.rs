@@ -41,7 +41,7 @@ pub struct Cell {
     /// Byte offset of this cluster's first byte, relative to its logical line.
     pub byte: u32,
     /// Byte length of the cluster (for grapheme-wise deletion/movement).
-    pub len: u16,
+    pub len: u32,
     /// Display width in columns: 0, 1, or 2 (wider clusters are possible but rare).
     pub width: u16,
     /// Starting display column on this row.
@@ -548,12 +548,12 @@ fn build_line(rope: &Rope, line: usize, wrap_width: usize, tab_width: usize) -> 
         }
         let width = grapheme_width(g, col, tab);
         debug_assert!(
-            off <= u32::MAX as usize && g.len() <= u16::MAX as usize,
-            "logical line or grapheme exceeds Cell's compact field range"
+            off <= u32::MAX as usize,
+            "logical line exceeds Cell's compact field range"
         );
         row.cells.push(Cell {
             byte: off as u32,
-            len: g.len() as u16,
+            len: g.len() as u32,
             width,
             col,
         });
@@ -594,6 +594,14 @@ mod tests {
         // Clicking inside the wide char snaps to its start byte.
         assert_eq!(layout.pos_to_byte(0, 2), "a".len());
         assert_eq!(layout.pos_to_byte(0, 1), "a".len());
+    }
+
+    #[test]
+    fn long_grapheme_clusters_keep_their_full_length() {
+        let text = format!("a{}", "\u{20dd}".repeat(40_000));
+        let rope = Rope::from_str(&text);
+        let layout = Layout::build(&rope, 80, 4);
+        assert_eq!(layout.pos_to_byte(0, 5), text.len());
     }
 
     #[test]
