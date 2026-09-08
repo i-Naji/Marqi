@@ -68,7 +68,7 @@ version = "1.1.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "40c48f72fd53cd289104fc64099abca73db4166ad86ea0b4341abe65af83dadc"
 dependencies = [
- "windows-sys 0.60.2",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -79,7 +79,7 @@ checksum = "291e6a250ff86cd4a820112fb8898808a366d8f9f58ce16d1f538353ad55747d"
 dependencies = [
  "anstyle",
  "once_cell_polyfill",
- "windows-sys 0.60.2",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -436,7 +436,7 @@ dependencies = [
  "mio",
  "parking_lot",
  "rustix",
- "signal-hook",
+ "signal-hook 0.3.18",
  "signal-hook-mio",
  "winapi",
 ]
@@ -569,7 +569,7 @@ dependencies = [
  "libc",
  "option-ext",
  "redox_users",
- "windows-sys 0.60.2",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -631,7 +631,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "39cab71617ae0d63f51a36d69f866391735b51691dbda63cf6f96d042b63efeb"
 dependencies = [
  "libc",
- "windows-sys 0.60.2",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -1108,7 +1108,7 @@ dependencies = [
  "regex",
  "ropey",
  "serde",
- "signal-hook",
+ "signal-hook 0.4.4",
  "syntect",
  "terminal-colorsaurus",
  "toml",
@@ -1362,7 +1362,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7d8fae84b431384b68627d0f9b3b1245fcf9f46f6c0e3dc902e9dce64edd1967"
 dependencies = [
  "libc",
- "windows-sys 0.60.2",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -1849,7 +1849,7 @@ dependencies = [
  "errno",
  "libc",
  "linux-raw-sys",
- "windows-sys 0.60.2",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -1971,6 +1971,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "signal-hook"
+version = "0.4.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b2a0c28ca5908dbdbcd52e6fdaa00358ab88637f8ab33e1f188dd510eb44b53d"
+dependencies = [
+ "libc",
+ "signal-hook-registry",
+]
+
+[[package]]
 name = "signal-hook-mio"
 version = "0.2.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1978,7 +1988,7 @@ checksum = "b75a19a7a740b25bc7944bdee6172368f988763b744e3d4dfe753f6b4ece40cc"
 dependencies = [
  "libc",
  "mio",
- "signal-hook",
+ "signal-hook 0.3.18",
 ]
 
 [[package]]
@@ -2118,8 +2128,8 @@ dependencies = [
  "bitflags 2.13.0",
  "parking_lot",
  "rustix",
- "signal-hook",
- "windows-sys 0.60.2",
+ "signal-hook 0.3.18",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -2155,7 +2165,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "230a1b821ccbd75b185820a1f1ff7b14d21da1e442e22c0863ea5f08771a8874"
 dependencies = [
  "rustix",
- "windows-sys 0.60.2",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -2205,7 +2215,7 @@ dependencies = [
  "pest_derive",
  "phf 0.11.3",
  "sha2",
- "signal-hook",
+ "signal-hook 0.3.18",
  "siphasher",
  "terminfo",
  "termios",
@@ -2755,7 +2765,7 @@ version = "0.1.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c2a7b1c03c876122aa43f3020e6c3c3ee5c05081c9a00739faf7503aeba10d22"
 dependencies = [
- "windows-sys 0.60.2",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
