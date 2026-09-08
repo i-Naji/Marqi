@@ -1,6 +1,6 @@
 # Marqi [![CI](https://github.com/i-naji/marqi/actions/workflows/ci.yml/badge.svg)](https://github.com/i-naji/marqi/actions/workflows/ci.yml) [![Release](https://img.shields.io/github/v/release/i-naji/marqi?sort=semver)](https://github.com/i-naji/marqi/releases) [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 
-<img src="https://vhs.charm.sh/vhs-44euONSCrs1dAy6AmgbX6l.gif" alt="Made with VHS">
+<img src="https://vhs.charm.sh/vhs-3Q5dFj2srkaJoFb2hrbgBj.gif" alt="Made with VHS">
 
 > **The terminal Markdown editor with true live preview.**
 >
@@ -24,6 +24,8 @@ The document stays rendered while you write, and only the content under your cur
 - ⌨️ Standard, Vim, Nano and Emacs keybindings
 - 🖱️ Full mouse support
 - 💾 Atomic saves with optional autosave
+- 🧭 Command palette, document outline and recent files
+- 🛟 Recovery snapshots and external-change detection
 - 🎨 Configurable themes
 - 📦 Single portable binary
 - 🖥️ Linux, macOS and Windows
@@ -56,10 +58,14 @@ cargo install --git https://github.com/i-Naji/Marqi
 ```sh
 marqi README.md      # Edit a Markdown file
 marqi -r README.md   # Render to stdout
+cat README.md | marqi -r - --width 80
+marqi -r README.md --html > README.html
 marqi --help         # Show all commands and options
 ```
 
-Press `Ctrl+G` inside Marqi to view the complete keybinding reference.
+Press `F1` (or `Ctrl+Shift+P`) for the command palette, `F2` for the
+outline, and `F12` for Save As. `Ctrl+G` opens settings and the keybinding
+reference.
 
 ## Configuration
 
@@ -81,6 +87,9 @@ variant = "auto"           # "auto" | "dark" | "light"
 ```
 
 See [`marqi.example.toml`](marqi.example.toml) for all available options.
+
+Settings changes apply to the current session. Choose **Save defaults** to
+write them to the config file.
 
 ## Documentation
 

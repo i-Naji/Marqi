@@ -1,5 +1,53 @@
 # Changelog
 
+## [0.2.0] - 2026-09-08
+
+### Added
+
+- Command palette (`F1` / `Ctrl+Shift+P`), document outline (`F2` /
+  `Ctrl+Shift+O`), and Save As shortcut (`F12` / `Ctrl+Shift+S`).
+- Formatting actions for inline styles, links, headings, quotes, lists, tasks,
+  and table alignment. Rendered task checkboxes can be toggled with the mouse.
+- Footnote navigation and confirmation before opening HTTP(S) links.
+- On-demand diagnostics for unmatched fences, unresolved references, malformed
+  tables, and duplicate headings.
+- New, open, recent, rename, and move-to-trash file actions. Recent files retain
+  cursor and per-view scroll positions.
+- Recovery snapshots for idle unsaved edits, with restore or discard on open.
+- External file change detection. Manual save offers reload, overwrite, Save As,
+  or cancel; autosave pauses when a conflict is detected.
+- Optional word, character, selection, and reading-time statistics.
+- Named theme families with matching syntax themes and terminal background
+  detection. Settings can be changed in-app and saved with **Save defaults**.
+- Render-mode stdin (`-`), plain-text wrapping with `--width`, and HTML output
+  with `--html`.
+
+### Changed
+
+- Find supports case-sensitive, whole-word, regex, and selection-only modes,
+  with Unicode-aware matching and cached results. Cancel restores the cursor
+  and selection.
+- Focus, raw, and read views keep separate scroll positions. Leaving read mode
+  restores the editing cursor.
+- Rendering builds rows for the viewport and caches blocks by content. Edits
+  reparse nearby blocks when possible, falling back to a full parse when needed.
+- Terminal pastes insert text verbatim without auto-pairing or list continuation.
+- Configuration validation reports unknown themes, color keys, invalid colors,
+  and invalid numeric values.
+
+### Fixed
+
+- Save failures remain visible; autosave backs off after errors and retries.
+  Failed Save As leaves the original document path intact.
+- Terminal cleanup attempts every restoration step. On Unix, SIGTERM and SIGHUP
+  also trigger cleanup.
+- Installers require checksum verification unless `MARQI_ALLOW_UNVERIFIED=1`
+  is explicitly set.
+- Render output strips terminal control characters and handles closed pipes.
+  Render width and blockquote nesting are bounded.
+- Fixed large Unicode grapheme handling, line-break mismatches between the
+  editor and parser, and repeated scanning of emphasis and backtick runs.
+
 ## [0.1.0] - 2026-06-10
 
 First public release.
@@ -91,3 +139,4 @@ First public release.
   and `MARQI_NO_MODIFY_PATH` are respected.
 
 [0.1.0]: https://github.com/i-naji/marqi/releases/tag/v0.1.0
+[0.2.0]: https://github.com/i-naji/marqi/compare/v0.1.0...v0.2.0

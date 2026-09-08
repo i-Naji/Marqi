@@ -1,8 +1,7 @@
 # Architecture
 
 Marqi is a single-binary terminal Markdown editor. This document maps the code
-and explains the rendering model, so contributors can find their way around and
-so the planned **vault** (multi-note workspace) can be added without a rewrite.
+and rendering model in v0.2.0. `App` owns one document at a time.
 
 ## Crates and the event loop
 
@@ -10,14 +9,18 @@ so the planned **vault** (multi-note workspace) can be added without a rewrite.
 loads config, then runs a render-on-event loop:
 
 ```
-draw(frame) ──▶ event::read() (blocks) ──▶ app.handle_key() ──▶ draw …
+draw(frame) ──▶ event::poll(timeout) ──▶ handle input or tick ──▶ draw …
 ```
+
+The timeout is 500 ms while a tick is pending and one second otherwise.
+Ticks handle autosave and recovery; polling also lets Unix termination signals
+stop the loop.
 
 `tui.rs` owns terminal setup/teardown. It enters raw mode + the alternate
 screen, opts into the CSI-u keyboard protocol where supported (so `Shift`
 +movement is reported unambiguously), and installs a panic hook that restores
-the terminal before any panic message prints. Restoration is idempotent, so the
-terminal is never left broken.
+the terminal before any panic message prints. Restoration is idempotent and
+attempts every cleanup step even if an earlier step fails.
 
 ## Module map
 
@@ -25,7 +28,7 @@ terminal is never left broken.
 | --- | --- |
 | `main.rs` | CLI parsing, stdin/file input, terminal lifecycle, event loop, `--render` |
 | `tui.rs` | Raw mode / alternate screen, keyboard-enhancement flags, panic-safe restore |
-| `buffer.rs` | `TextBuffer`: a `ropey::Rope` plus its path and modified flag; load/save/slice |
+| `buffer.rs` | `TextBuffer`: rope, path, modified flag, atomic saves, disk-change checks, recovery snapshots |
 | `text.rs` | Grapheme-cluster boundary lookups over a rope (`next_grapheme`/`prev_grapheme`) |
 | `cursor.rs` | Byte-offset cursor with a sticky goal column; grapheme/word/line/page motions |
 | `layout.rs` | Display geometry: exact per-line row counts with chunked prefix sums; visual rows materialize on demand through a bounded cache; byte ↔ (row, col) mapping |
@@ -34,10 +37,16 @@ terminal is never left broken.
 | `history.rs` | Undo/redo as reversible edits with typing-burst coalescing |
 | `clipboard.rs` | System clipboard + internal register fallback + OSC 52 for SSH |
 | `color.rs` | Truecolor detection, RGB → xterm-256 downgrade, `#rrggbb` parsing |
-| `config.rs` | TOML configuration loading from the platform config dir |
+| `config.rs` | TOML loading, validation, and explicit settings persistence |
 | `app.rs` | `App`: editor state, input handling per preset/mode, editing primitives, cache orchestration |
+| `app/action.rs`, `app/palette.rs` | Shared editor actions and fuzzy command palette |
+| `app/menu.rs` | Settings popup and Save defaults action |
+| `app/file_ops.rs`, `app/session.rs` | File operations, recent files, cursor and scroll restoration |
+| `app/formatting.rs` | Markdown formatting and task toggles |
+| `app/outline.rs`, `app/navigation.rs` | Heading outline, footnote navigation, external link confirmation |
+| `app/diagnostics.rs` | On-demand Markdown checks |
 | `app/prompt.rs` | Bottom-line prompts: save-as, overwrite and quit confirms, shared line editing |
-| `app/search.rs` | Find & replace: smart-case matching, match stepping, single-step replace-all |
+| `app/search.rs` | Cached find results, case/word/regex/selection options, single-step replace-all |
 | `app/smart_edit.rs` | Auto-paired delimiters and list-marker continuation on `Enter` |
 | `app/table.rs` | GFM pipe-table row mode (cell jumps, row insert/delete/move) |
 | `view.rs` | Row indexes for the hybrid/raw/read views (segments + prefix sums, no stored rows); viewport assembly; the LRU block render cache and height memo |
@@ -114,41 +123,7 @@ random edit that the incremental `Layout`/`LineIndex`/`BlockIndex` equal a
 fresh build — plus an anti-vacuous check that the windowed path actually
 engages.
 
-## Vault extension plan (not yet implemented)
-
-Marqi is deliberately structured so an Obsidian-style **vault** — a workspace of
-many notes with `[[wikilinks]]`, backlinks, and a file switcher — can be layered
-on without disturbing the editing core. Today `App` owns exactly one
-`TextBuffer`. The seam is to split per-document state out of the shared,
-document-independent services:
-
-- **Extract a `Document`** owning the per-note state that already clusters
-  together in `App`: `buffer`, `cursor`, `selection_anchor`, `history`,
-  `scroll_y`, the `layout` (+ `layout_width`/`layout_dirty`), `line_index`,
-  the view caches (`view`, `view_cache`, `view_version`, …), and `version`.
-- **Keep on `App`** the services that are not per-document: `theme`,
-  `highlighter`, `clipboard`, `preset`, `mode`, `line_numbers`, `tab_width`,
-  `scrolloff`, and the editor-area geometry. `App` then holds the *active*
-  `Document` (and later a list of open ones).
-- **Add a `Vault`/`Workspace`** owning a root directory, a note index, the set
-  of open `Document`s (tabs / MRU), and a link graph for backlinks.
-
-Supporting pieces, all of which compose with the current code:
-
-- **Wikilinks**: comrak exposes `extension.wikilinks_title_after_pipe` /
-  `wikilinks_title_before_pipe`; enable them in `markdown::gfm_options` behind a
-  vault flag and add a resolver mapping `[[Note]]` → a path in the vault.
-- **Backlinks**: build an index by scanning the vault for links into each note;
-  invalidate per-note on save.
-- **UI**: the ratatui layout already splits the screen into regions, so a sidebar
-  file tree slots in next to the editor; a quick-switcher overlay can reuse the
-  existing help-overlay pattern in `ui.rs`; "follow link under cursor" becomes a
-  new action in `app.rs`.
-
-Because the per-document fields are already grouped and mutated through a single
-path, the extraction is mechanical rather than invasive.
-
-## Known limitations & future work
+## Known limitations
 
 Block partitioning for both the hybrid view and the read-mode preview comes
 from comrak (`block_index::parse_blocks`, applied to a window or the whole
@@ -174,6 +149,7 @@ exactly as they render. The remaining deliberate simplifications:
   footnote syntax can flip a *distant* definition between block and gap —
   invisible to any window. Such edits (and windows containing footnote syntax)
   take the whole-document path; everything else still windows.
-- **Footnotes** render minimally: a reference shows its index (`[N]`) and the
-  definition shows a `[name]:` label. There is no superscripting or
-  reference↔definition navigation yet.
+- **Footnotes** render with a `[name]` reference and a `[name]:` definition
+  label, without superscripting. The **Follow link or footnote** action moves
+  between a reference and its definition. Local file links only show their target
+  in the status bar.
