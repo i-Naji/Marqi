@@ -36,7 +36,7 @@ impl PtyChild {
                 &mut slave_fd,
                 std::ptr::null_mut(),
                 std::ptr::null_mut(),
-                &mut size,
+                &raw mut size,
             )
         };
         assert_eq!(opened, 0, "openpty failed");
